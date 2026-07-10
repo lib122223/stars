@@ -9,13 +9,19 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@wwtelescope/embed": "^1.7.5",
+    "@wwtelescope/engine-helpers": "^0.18.0",
+    "aladin-lite": "^3.9.0-beta",
+    "astronomy-engine": "^2.1.19",
     "next": "16.2.10",
+    "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
