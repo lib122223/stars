@@ -15,7 +15,7 @@ interface OrientationToggleProps {
 const statusMeta: Record<OrientationStatus, { label: string; active: boolean; hint?: string }> = {
   standard:    { label: "朝向", active: false },
   activating:  { label: "请求中…", active: true },
-  active:      { label: "朝向中", active: true, hint: "已开启" },
+  active:      { label: "", active: true, hint: "已开启" },
   unavailable: { label: "朝向", active: false, hint: "不支持" },
 };
 

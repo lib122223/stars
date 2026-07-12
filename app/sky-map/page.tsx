@@ -119,6 +119,7 @@ function SkyMapPage() {
   const [orientationStatus, setOrientationStatus] = useState<OrientationStatus>("standard");
   const [orientationAz, setOrientationAz] = useState<number | null>(null);
   const [orientationPitch, setOrientationPitch] = useState<number | null>(null);
+  const [orientationGamma, setOrientationGamma] = useState<number | null>(null);
 
   /** 请求设备方向权限 */
   const activateOrientation = useCallback(async () => {
@@ -171,14 +172,39 @@ function SkyMapPage() {
 
   // 朝向模式 active → 监听设备方向
   useEffect(() => {
+    let prevSin: number | null = null;
+    let prevCos: number | null = null;
+    let prevPitch: number | null = null;
+
     if (orientationStatus !== "active") {
       setOrientationAz(null);
       setOrientationPitch(null);
+      setOrientationGamma(null);
+      prevSin = null; prevCos = null; prevPitch = null;
       return;
     }
     function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.alpha != null) setOrientationAz((360 - (e.alpha % 360)) % 360);
-      if (e.beta != null) setOrientationPitch(Math.max(0, Math.min(90, 90 - e.beta)));
+      if (e.alpha != null) {
+        const raw = (360 - (e.alpha % 360)) % 360;
+        const rad = (raw * Math.PI) / 180;
+        const s = Math.sin(rad);
+        const c = Math.cos(rad);
+        if (prevSin != null && prevCos != null) {
+          prevSin = prevSin * 0.7 + s * 0.3;
+          prevCos = prevCos * 0.7 + c * 0.3;
+        } else {
+          prevSin = s; prevCos = c;
+        }
+        const az = ((Math.atan2(prevSin, prevCos) * 180) / Math.PI + 360) % 360;
+        setOrientationAz(az);
+      }
+      if (e.beta != null) {
+        const raw = Math.max(0, Math.min(90, 90 - e.beta));
+        const smoothed = prevPitch != null ? prevPitch * 0.7 + raw * 0.3 : raw;
+        prevPitch = smoothed;
+        setOrientationPitch(smoothed);
+      }
+      if (e.gamma != null) setOrientationGamma(e.gamma);
     }
     window.addEventListener("deviceorientation", handleOrientation);
     return () => window.removeEventListener("deviceorientation", handleOrientation);
@@ -229,12 +255,30 @@ function SkyMapPage() {
         <span className="text-white/25 text-xs pointer-events-none mr-2">
           {obsLocation.lat.toFixed(1)}°N
         </span>
-        {/* 朝向模式切换 */}
-        <OrientationToggle
-          status={orientationStatus}
-          onActivate={activateOrientation}
-          onDeactivate={deactivateOrientation}
-        />
+        {/* 模式区：当前模式 + 切换入口 */}
+        <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 ${orientationStatus === "active" ? "border-accent/15" : "border-white/5"}`}>
+          {orientationStatus === "active" ? (
+            <span className="text-[10px] text-accent/25 select-none">朝向中</span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[10px] text-white/10 select-none">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white/20">
+                <circle cx="12" cy="12" r="3" />
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="2" x2="12" y2="6" />
+                <line x1="12" y1="18" x2="12" y2="22" />
+                <line x1="2" y1="12" x2="6" y2="12" />
+                <line x1="18" y1="12" x2="22" y2="12" />
+              </svg>
+              2D 星图
+            </span>
+          )}
+
+          <OrientationToggle
+            status={orientationStatus}
+            onActivate={activateOrientation}
+            onDeactivate={deactivateOrientation}
+          />
+        </span>
         {/* 搜索入口 */}
         <SearchBar timeContext={displayTimeKey} />
       </div>
@@ -255,7 +299,8 @@ function SkyMapPage() {
           selected={selected}
           obsTime={obsTime}
           obsLocation={obsLocation}
-          orientation={orientationAz != null && orientationPitch != null ? { azimuth: orientationAz, pitch: orientationPitch } : undefined}
+          is2DMode={orientationStatus !== "active"}
+          orientation={orientationAz != null && orientationPitch != null ? { azimuth: orientationAz, pitch: orientationPitch, gamma: orientationGamma ?? 0 } : undefined}
         />
       </div>
 

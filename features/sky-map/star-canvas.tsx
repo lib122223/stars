@@ -27,8 +27,10 @@ interface StarCanvasProps {
   selected: { slug: string } | null;
   obsTime: Date;
   obsLocation: { lat: number; lng: number };
-  /** 朝向模式：设备方位角(0-360°, 0=北) + 仰角(0-90°, 90=天顶) */
-  orientation?: { azimuth: number; pitch: number };
+  /** 2D 星图模式启用时绘制地平线参考环 */
+  is2DMode?: boolean;
+  /** 观察模式：设备方位角(0-360°) + 仰角(0-90°) + 左右倾斜角(°) */
+  orientation?: { azimuth: number; pitch: number; gamma: number };
 }
 
 /** URL slug → StarCanvas 星点名称的映射 */
@@ -103,14 +105,15 @@ export default function StarCanvas({
   selected,
   obsTime,
   obsLocation,
+  is2DMode,
   orientation,
 }: StarCanvasProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const dimsRef = useRef({
     W: 0, H: 0,
     animStart: 0, animSlug: "",
-    /** 实时渲染位置 — 供点击命中检测使用 */
     nameToPos: new Map<string, { x: number; y: number }>(),
+    nameToAlpha: new Map<string, number>(),
   });
   const [, forceRender] = useState(0);
 
@@ -157,7 +160,10 @@ export default function StarCanvas({
     // ---- 根据 obsTime 计算 MVP 对象的实时 canvas 位置 ----
     const cx = W / 2;
     const cy = H / 2;
-    const radius = Math.min(W, H) / 2 * 0.85;
+    const rx = W / 2 * 0.85;
+    const ry = H / 2 * 0.85;
+    const hFovDeg = 75 * (W / Math.max(W, H));
+    const vFovDeg = 45 * (H / Math.max(W, H));
 
     // 内容池对象坐标（RA hours, Dec degrees），对应 objectMeta 中的可点击对象
     const coordLookup: Record<string, { raH: number; decD: number; isPlanet: boolean; body?: Body }> = {
@@ -180,15 +186,10 @@ export default function StarCanvas({
       .map((s) => ({ name: s.nameZh, raH: s.raHours, decD: s.decDeg, mag: s.magnitude }));
 
     const nameToPos = new Map<string, { x: number; y: number }>();
+    const nameToAlpha = new Map<string, number>();
     try {
       const t = MakeTime(obsTime);
       const obs = new Observer(obsLocation.lat, obsLocation.lng, 0);
-
-      const orient = orientation;
-      const fovDeg = 90;
-      const viewAzRad = orient ? (orient.azimuth * Math.PI) / 180 : 0;
-      const viewAlt = orient ? orient.pitch : 90;
-      const cosViewAlt = Math.cos(viewAlt * Math.PI / 180);
 
       for (const [name, c] of Object.entries(coordLookup)) {
         let alt: number, az: number;
@@ -201,52 +202,77 @@ export default function StarCanvas({
           alt = hor.altitude; az = hor.azimuth;
         }
 
-        let px: number, py: number;
-
-        if (orient) {
-          // 朝向投影：以设备朝向为中心，FOV=90° 的 rectilinear 映射
-          const dAz = ((az - orient.azimuth + 540) % 360) - 180;
-          const dAlt = alt - orient.pitch;
-          const hFov = fovDeg / 2;
-          const xFactor = Math.abs(dAz * cosViewAlt) > hFov ? (dAz > 0 ? hFov : -hFov) / (dAz * cosViewAlt) : 1;
-          const yFactor = Math.abs(dAlt) > hFov ? (dAlt > 0 ? hFov : -hFov) / dAlt : 1;
-          const factor = Math.min(xFactor, yFactor);
-          px = cx + (dAz * cosViewAlt * factor * W) / fovDeg;
-          py = cy - (dAlt * factor * H) / fovDeg;
-        } else {
-          // 天顶投影：zenith 为画布中心
-          const azRad = (az * Math.PI) / 180;
-          const dist = alt > 0 ? (1 - alt / 90) * radius : radius * 1.05;
-          px = cx + Math.sin(azRad) * dist;
-          py = cy - Math.cos(azRad) * dist;
-        }
-
-        nameToPos.set(name, { x: px, y: py });
+        // 观察模式：pitch 为有效天顶
+        const viewAz = orientation ? orientation.azimuth : 0;
+        const viewAlt = orientation ? orientation.pitch : 90;
+        const rawEffectiveAlt = alt - viewAlt + 90;
+        // effectiveAlt > 90 时做镜像映射到 0-90 区间
+        const effectiveAlt = Math.max(0, rawEffectiveAlt > 90 ? 180 - rawEffectiveAlt : rawEffectiveAlt);
+        // 球面角距离（真实空间判定层，用未压缩方位角）
+        const dAzRad = (((az - viewAz + 540) % 360) * Math.PI) / 180;
+        const sinVA = Math.sin((viewAlt * Math.PI) / 180);
+        const cosVA = Math.cos((viewAlt * Math.PI) / 180);
+        const sinA = Math.sin((alt * Math.PI) / 180);
+        const cosA = Math.cos((alt * Math.PI) / 180);
+        const cosAngDist = sinVA * sinA + cosVA * cosA * Math.cos(dAzRad);
+        const behind = orientation && cosAngDist < 0;
+        // 屏幕投影层：天顶附近方位角收拢
+        const azCompress = orientation ? Math.cos((effectiveAlt * Math.PI) / 180) : 1;
+        // 低于视角中心的对象翻转 180° 以区分上下
+        const belowCenter = orientation && rawEffectiveAlt < 90;
+        const azRad = dAzRad * azCompress + (belowCenter ? Math.PI : 0);
+        const baseDist = effectiveAlt > 0 && !behind
+          ? orientation
+            ? (() => {
+                const linear = (1 - effectiveAlt / 90);
+                const tan = Math.min(Math.tan(((90 - effectiveAlt) * Math.PI) / 180) * 0.289, 1.05);
+                const blend = (90 - viewAlt) / 90; // pitch高→线性，pitch低→tan
+                return blend * tan + (1 - blend) * linear;
+              })()
+            : (1 - effectiveAlt / 90)
+          : 1.05;
+        nameToPos.set(name, {
+          x: cx + Math.sin(azRad) * baseDist * rx,
+          y: cy - Math.cos(azRad) * baseDist * ry,
+        });
+        const dAz = Math.min(Math.abs(az - viewAz), 360 - Math.abs(az - viewAz));
+        const dAlt = Math.abs(alt - viewAlt);
+        const ellipDist = Math.sqrt((dAz * dAz) / (hFovDeg * hFovDeg) + (dAlt * dAlt) / (vFovDeg * vFovDeg));
+        nameToAlpha.set(name, behind ? 0 : orientation && alt < 0 ? 0 : orientation ? Math.max(0, Math.min(1, 1 - ellipDist)) : 1);
       }
     // 扩展亮星位置计算
     for (const s of extendedStars) {
       const hor = Horizon(t, obs, s.raH * 15, s.decD);
       const alt = hor.altitude; const az = hor.azimuth;
 
-      let px: number, py: number;
-      if (orient) {
-        const dAz = ((az - orient.azimuth + 540) % 360) - 180;
-        const dAlt = alt - orient.pitch;
-        const hFov = fovDeg / 2;
-        const dAzAdj = dAz * cosViewAlt;
-        const xFactor = Math.abs(dAzAdj) > hFov ? (dAz > 0 ? hFov : -hFov) / dAzAdj : 1;
-        const yFactor = Math.abs(dAlt) > hFov ? (dAlt > 0 ? hFov : -hFov) / dAlt : 1;
-        const factor = Math.min(xFactor, yFactor);
-        px = cx + (dAzAdj * factor * W) / fovDeg;
-        py = cy - (dAlt * factor * H) / fovDeg;
-      } else {
-        const azRad = (az * Math.PI) / 180;
-        const dist = alt > 0 ? (1 - alt / 90) * radius : radius * 1.05;
-        px = cx + Math.sin(azRad) * dist;
-        py = cy - Math.cos(azRad) * dist;
-      }
-
-      nameToPos.set(s.name, { x: px, y: py });
+      const viewAz = orientation ? orientation.azimuth : 0;
+      const viewAlt = orientation ? orientation.pitch : 90;
+      const rawEffectiveAlt = alt - viewAlt + 90;
+      const effectiveAlt = Math.max(0, rawEffectiveAlt > 90 ? 180 - rawEffectiveAlt : rawEffectiveAlt);
+      const dAzRadE = (((az - viewAz + 540) % 360) * Math.PI) / 180;
+      const sinVAe = Math.sin((viewAlt * Math.PI) / 180);
+      const cosVAe = Math.cos((viewAlt * Math.PI) / 180);
+      const sinAe = Math.sin((alt * Math.PI) / 180);
+      const cosAe = Math.cos((alt * Math.PI) / 180);
+      const behind = orientation && (sinVAe * sinAe + cosVAe * cosAe * Math.cos(dAzRadE)) < 0;
+      const azCompressE = orientation ? Math.cos((effectiveAlt * Math.PI) / 180) : 1;
+      const belowCenterE = orientation && rawEffectiveAlt < 90;
+      const azRad = dAzRadE * azCompressE + (belowCenterE ? Math.PI : 0);
+      const baseDist = effectiveAlt > 0 && !behind
+        ? orientation
+          ? (() => {
+              const linearE = (1 - effectiveAlt / 90);
+              const tanE = Math.min(Math.tan(((90 - effectiveAlt) * Math.PI) / 180) * 0.289, 1.05);
+              const blendE = (90 - viewAlt) / 90;
+              return blendE * tanE + (1 - blendE) * linearE;
+            })()
+          : (1 - effectiveAlt / 90)
+        : 1.05;
+      nameToPos.set(s.name, { x: cx + Math.sin(azRad) * baseDist * rx, y: cy - Math.cos(azRad) * baseDist * ry });
+      const dAzE = Math.min(Math.abs(az - viewAz), 360 - Math.abs(az - viewAz));
+      const dAltE = Math.abs(alt - viewAlt);
+      const ellipDistE = Math.sqrt((dAzE * dAzE) / (hFovDeg * hFovDeg) + (dAltE * dAltE) / (vFovDeg * vFovDeg));
+      nameToAlpha.set(s.name, behind ? 0 : orientation && alt < 0 ? 0 : orientation ? Math.max(0, Math.min(1, 1 - ellipDistE)) : 1);
     }
 
     } catch { /* fallback to hardcoded positions */ }
@@ -266,6 +292,7 @@ export default function StarCanvas({
     }
 
     dimsRef.current.nameToPos = nameToPos;
+    dimsRef.current.nameToAlpha = nameToAlpha;
 
     // 夜空渐变背景
     const bg = ctx.createRadialGradient(W * 0.5, H * 0.15, 0, W * 0.5, H * 0.5, W * 0.8);
@@ -308,7 +335,8 @@ export default function StarCanvas({
       }
 
       ctx.save();
-      ctx.globalAlpha = s.name === "bg" ? 0.10 + Math.random() * 0.30 : 1;
+      const objAlpha = nameToAlpha.get(s.name) ?? 1;
+      ctx.globalAlpha = (s.name === "bg" ? 0.10 + Math.random() * 0.30 : 1) * objAlpha;
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, s.r * 1.2);
       g.addColorStop(0, "#ffffff");
       g.addColorStop(0.3, s.color);
@@ -344,7 +372,7 @@ export default function StarCanvas({
 
       // 星点本体
       ctx.save();
-      ctx.globalAlpha = 0.55;
+      ctx.globalAlpha = 0.55 * (nameToAlpha.get(s.name) ?? 1);
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.3);
       g.addColorStop(0, "#ffffff");
       g.addColorStop(0.4, "#b0c8e8");
@@ -360,7 +388,8 @@ export default function StarCanvas({
         ctx.save();
         ctx.font = "9px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(255,255,255,0.18)";
+        const exLa = nameToAlpha.get(s.name) ?? 1;
+        ctx.fillStyle = `rgba(255,255,255,${(0.18 * exLa).toFixed(2)})`;
         ctx.fillText(s.name, cx, cy + r + 10);
         ctx.restore();
       }
@@ -505,22 +534,91 @@ export default function StarCanvas({
       const cx = pos ? pos.x : s.x * W;
       const cy = pos ? pos.y : s.y * H;
       const isMain = clickableStars.has(s.name);
+      const la = nameToAlpha.get(s.name) ?? 1;
       ctx.font = isMain ? "11px sans-serif" : "9px sans-serif";
-      ctx.fillStyle = isMain ? "rgba(255,255,255,0.40)" : "rgba(255,255,255,0.18)";
+      ctx.fillStyle = isMain
+        ? `rgba(255,255,255,${(0.40 * la).toFixed(2)})`
+        : `rgba(255,255,255,${(0.18 * la).toFixed(2)})`;
       ctx.fillText(s.label, cx, cy + s.r + 12);
     }
     ctx.restore();
 
-    ctx.save();
-    ctx.font = "10px sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.12)";
-    ctx.textAlign = "center";
-    ctx.fillText("N", W * 0.5, 16);
-    ctx.fillText("E", W - 16, H * 0.5);
-    ctx.fillText("S", W * 0.5, H - 12);
-    ctx.fillText("W", 16, H * 0.5);
-    ctx.restore();
-  }, [target, source, selected, obsTime, obsLocation]);
+    // 地平线参考环 — 仅 2D 星图模式
+    if (is2DMode) {
+      ctx.save();
+      ctx.globalAlpha = 0.04;
+      ctx.strokeStyle = "#8090b0";
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // NESW 方位标签 — 仅 2D 星图模式
+    if (is2DMode) {
+      ctx.save();
+      ctx.font = "10px sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.16)";
+      ctx.textAlign = "center";
+      ctx.fillText("N", W * 0.5, 16);
+      ctx.fillText("E", W - 16, H * 0.5);
+      ctx.fillText("S", W * 0.5, H - 12);
+      ctx.fillText("W", 16, H * 0.5);
+      ctx.restore();
+    }
+
+    // 观察模式：视点标记 + 暗角 + 地面阴影
+    if (!is2DMode) {
+      // 视点锚 — 微型空心圆
+      ctx.save();
+      ctx.globalAlpha = 0.12;
+      ctx.strokeStyle = "#8090b0";
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // 地平线弧 — alt=0° 在投影中的位置
+      if (orientation && orientation.pitch < 80) {
+        const hAz0 = orientation.azimuth;
+        ctx.save();
+        ctx.globalAlpha = 0.06;
+        ctx.strokeStyle = "#8090b0";
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        let started = false;
+        for (let dAz = -80; dAz <= 80; dAz += 5) {
+          const ha = hAz0 + dAz;
+          const hEffectiveAlt = Math.max(0, 0 - orientation.pitch + 90);
+          const hComplement = 90 - hEffectiveAlt;
+          const hBaseDist = Math.min(Math.tan((hComplement * Math.PI) / 180) * 0.289, 1.05);
+          const hAzRad = (((ha - hAz0 + 540) % 360) * Math.PI) / 180;
+          const hx = cx + Math.sin(hAzRad) * hBaseDist * rx;
+          const hy = cy - Math.cos(hAzRad) * hBaseDist * ry;
+          if (!started) { ctx.moveTo(hx, hy); started = true; }
+          else ctx.lineTo(hx, hy);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const vR = Math.sqrt(rx * ry);
+      const vignette = ctx.createRadialGradient(cx, cy, vR * 0.7, cx, cy, vR * 1.3);
+      vignette.addColorStop(0, "transparent");
+      vignette.addColorStop(1, "rgba(0,0,0,0.15)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, W, H);
+
+      // 地面阴影 — 底部向上渐隐，暗示"站在地面上看"
+      const ground = ctx.createLinearGradient(0, H * 0.5, 0, H);
+      ground.addColorStop(0, "transparent");
+      ground.addColorStop(1, "rgba(2,4,8,0.25)");
+      ctx.fillStyle = ground;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }, [target, source, selected, obsTime, obsLocation, is2DMode, orientation]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -533,8 +631,11 @@ export default function StarCanvas({
       const n2p = dimsRef.current.nameToPos;
 
       // 仅在可点击对象中查找命中
+      const n2a = dimsRef.current.nameToAlpha;
       for (const s of stars) {
         if (!clickableStars.has(s.name)) continue;
+        // 观察模式下不可见对象不参与命中
+        if ((n2a.get(s.name) ?? 1) < 0.05) continue;
 
         // 使用实时渲染位置（与绘制坐标一致）
         const pos = n2p.get(s.name);
