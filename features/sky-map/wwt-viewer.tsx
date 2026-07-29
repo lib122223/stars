@@ -136,31 +136,6 @@ export default function WWTViewer({
       s.set_locationLat?.(location.lat);
       s.set_locationLng?.(location.lng);
 
-      // 添加 MVP 对象数据层：即使无巡天图，也能看到可点天体
-      try {
-        const csvData = [
-          "Name,RA,Dec,Type",
-          "木星,8.8,18,planet",
-          "金星,5.0,18,planet",
-          "火星,13.5,-10,planet",
-          "土星,22.0,-13,planet",
-          "月球,12.0,-5,planet",
-          "织女星,18.6156,38.7837,bright_star",
-          "天狼星,6.7525,-16.7161,bright_star",
-          "参宿四,5.9195,7.4071,bright_star",
-          "北极星,2.5303,89.2641,bright_star",
-          "猎户座,5.5,5,constellation",
-        ].join("\n");
-
-        const lm = (wwt as { lm?: { createSpreadsheetLayer?: (f: string, n: string, d: string) => unknown; addSpreadsheetLayer?: (l: unknown, f: string) => void } }).lm;
-        if (lm?.createSpreadsheetLayer && lm?.addSpreadsheetLayer) {
-          const layer = lm.createSpreadsheetLayer("Sky", "MVP Objects", csvData);
-          lm.addSpreadsheetLayer(layer, "Sky");
-        }
-      } catch {
-        // layer 不可用时不影响主流程
-      }
-
       // ready 后执行首航 — 通过 ref 拿最新 target，不依赖闭包中的旧值
       if (targetRef.current) {
         navigateTo(targetRef.current);
@@ -330,7 +305,7 @@ export default function WWTViewer({
   return (
     <div
       ref={containerRef}
-      className="h-full w-full"
+      className="h-full w-full pointer-events-none"
       onClick={handleCanvasClick}
       style={{ cursor: "crosshair" }}
     />

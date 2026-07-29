@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import AccountNav from "@/features/auth/account-nav";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -21,6 +22,9 @@ export const metadata: Metadata = {
 const navItems = [
   { href: "/", label: "首页" },
   { href: "/sky-map", label: "星图" },
+  { href: "/observations", label: "记录" },
+  { href: "/achievements", label: "成就" },
+  { href: "/gallery", label: "画廊" },
   { href: "/tools", label: "工具" },
 ];
 
@@ -34,16 +38,21 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="preconnect" href="https://basemaps.cartocdn.com" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="https://basemaps.cartocdn.com" />
+      </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <header className="fixed top-0 left-0 right-0 z-50 border-b border-white/5 bg-background/80 backdrop-blur-sm">
-          <nav className="mx-auto flex h-12 max-w-4xl items-center justify-between px-4">
+          <nav className="mx-auto flex h-12 max-w-5xl items-center justify-between gap-3 px-4">
             <Link
               href="/"
-              className="text-sm font-medium text-accent tracking-wide"
+              className="shrink-0 text-sm font-medium tracking-wide text-accent"
             >
-              Echo of Photons
+              <span className="sm:hidden">EOP</span>
+              <span className="hidden sm:inline">Echo of Photons</span>
             </Link>
-            <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-4">
               {navItems.map((item) => (
                 <Link
                   key={item.href}
@@ -53,6 +62,7 @@ export default function RootLayout({
                   {item.label}
                 </Link>
               ))}
+              <AccountNav />
             </div>
           </nav>
         </header>

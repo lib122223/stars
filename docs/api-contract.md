@@ -97,13 +97,11 @@
 |---|---|---:|---|
 | `lat` | number | 否 | 用户纬度 |
 | `lng` | number | 否 | 用户经度 |
-| `sceneType` | string | 否 | 观测场景，如 `urban`、`balcony`、`open_space` |
 
 ### 筛选优先级
 
 1. 先按当前时间有效性筛选。
-2. 如果传入 `sceneType`，优先匹配场景。
-3. 如果传入 `lat/lng`，作为轻量位置上下文参与增强。
+2. 如果传入 `lat/lng`，基于真实位置和天气数据生成观测判断。
 4. 如果缺少场景或位置上下文，回退到通用推荐。
 5. 返回首页第一屏结构化结果，而不是平铺数组。
 
@@ -139,6 +137,19 @@
 | `text` | string | 一行式同主题补充入口 |
 | `recommendationType` | string | 类型，如 `object`、`direction`、`location`、`time_window` |
 | `targetRef` | string \| null | 推荐目标引用 |
+
+#### 共享可见性字段
+
+当请求包含有效 `lat/lng` 时，响应同时返回：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `visibleSky.observationTime` | ISO datetime | 本次“今晚可见”计算参考时间 |
+| `visibleSky.limitingMagnitude` | number | 综合夜光、天气和月光估算的肉眼极限星等 |
+| `visibleSky.objects` | array | 完整实际可见目录，按推荐价值排序 |
+| `visibleSky.recommended` | array | `objects` 的前四项，必须与首页四项一致 |
+| `lightPollution.darknessScore` | number | NASA 夜间灯光邻域推导的相对暗夜分数，0-100 |
+| `lightPollution.available` | boolean | 本次是否成功读取卫星夜光数据 |
 
 ### 成功示例
 
@@ -470,3 +481,258 @@
 
 后续实现与代码审查都应保留这个分层意识。
 不要把预契约接口当成一个字段形态已经被完全验证过的正式接口。
+
+---
+
+## 5. 观测记录
+
+### 契约级别
+
+**MVP 正式契约**
+
+游客记录通过 `echo_observer_id` 匿名 Cookie 归属当前浏览器。注册或登录后，服务端把该浏览器尚未归属账号的记录绑定到当前用户；登录用户通过 `echo_session` 会话跨设备读取记录。
+
+### 获取记录
+
+`GET /api/observations`
+
+返回当前账号或匿名浏览器最近 100 条观测记录，并在 `account` 字段返回当前用户；游客为 `null`。
+
+### 新增记录
+
+`POST /api/observations`
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `targetName` | string | 是 | 观测目标名称，最多 255 字符 |
+| `targetSlug` | string/null | 否 | 已知对象 slug |
+| `objectType` | string | 否 | `planet`、`bright_star` 等 |
+| `observedAt` | ISO date string | 是 | 观测时间 |
+| `latitude` | number/null | 否 | -90 到 90 |
+| `longitude` | number/null | 否 | -180 到 180 |
+| `locationName` | string/null | 否 | 地点名称 |
+| `equipment` | string/null | 否 | 设备 |
+| `notes` | string/null | 否 | 最多 4000 字符 |
+| `confirmed` | boolean | 否 | 仅确认观测流程传 `true`；写入 `confirmed_at` 并参与成就计算 |
+
+成功响应中的 `newlyUnlocked` 返回本次新解锁的系列数组；游客或未完成系列时为空数组。
+
+### 删除记录
+
+`DELETE /api/observations/:id`
+
+登录用户只允许删除当前 `user_id` 所属记录；游客只允许删除当前 `observer_id` 且尚未绑定用户的记录。不存在或不属于当前身份时统一返回 `4041`。
+
+### 错误场景
+
+- 请求字段不合法 -> `4001`
+- 记录不存在或不属于当前浏览器 -> `4041`
+- 数据库不可用 -> `5001`
+
+---
+
+## 6. ISS 过境预测
+
+### 契约级别
+
+**MVP 正式契约**
+
+### 接口
+
+`GET /api/tools/satellite-passes`
+
+### 作用
+
+根据用户当前位置、CelesTrak 最新 ISS 轨道根数和 Open-Meteo 云量，返回未来 24 小时 ISS 过境及可见性判断。预测为站内提醒，不承诺网页关闭后的系统推送。
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `lat` | number | 是 | 用户纬度，范围 -90 到 90 |
+| `lng` | number | 是 | 用户经度，范围 -180 到 180 |
+
+### 成功返回字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `satellite` | object | 卫星名称和 NORAD 编号 |
+| `generatedAt` | ISO date string | 本次预测生成时间 |
+| `tleEpoch` | ISO date string | 使用的轨道根数历元 |
+| `window` | object | 预测起止时间和小时数 |
+| `passes` | array | 仰角达到 10° 以上的过境列表 |
+
+每个 `pass` 包含：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `start` | object | 出现时间、方位角、中文方向 |
+| `peak` | object | 最高点时间、方位、仰角、距离 |
+| `end` | object | 离开时间、方位角、中文方向 |
+| `durationMinutes` | number | 10° 仰角以上持续分钟数 |
+| `illuminatedDuringPass` | boolean | 过境期间 ISS 是否受到阳光照射 |
+| `observerSunAltitude` | number | 可见性评估时观察地太阳高度 |
+| `cloudCover` | number/null | 最接近该时段的预测云量 |
+| `visibility` | object | `easy`、`possible`、`difficult` 及具体原因 |
+
+### 成功示例
+
+```json
+{
+  "code": 0,
+  "data": {
+    "satellite": { "name": "ISS (ZARYA)", "noradId": 25544 },
+    "generatedAt": "2026-07-22T10:00:00.000Z",
+    "tleEpoch": "2026-07-22T03:40:37.501Z",
+    "window": {
+      "start": "2026-07-22T10:00:00.000Z",
+      "end": "2026-07-23T10:00:00.000Z",
+      "hours": 24
+    },
+    "passes": [
+      {
+        "id": "2026-07-22T12:18:20.000Z",
+        "start": { "time": "2026-07-22T12:18:20.000Z", "azimuth": 226.4, "direction": "西南" },
+        "peak": { "time": "2026-07-22T12:22:00.000Z", "azimuth": 181.2, "direction": "南", "elevation": 48.6, "rangeKm": 568 },
+        "end": { "time": "2026-07-22T12:25:40.000Z", "azimuth": 132.8, "direction": "东南" },
+        "durationMinutes": 7,
+        "illuminatedDuringPass": true,
+        "observerSunAltitude": -12.4,
+        "cloudCover": 24,
+        "visibility": {
+          "level": "easy",
+          "label": "容易看见",
+          "reason": "ISS 受阳光照亮，最高可观测仰角 49°，预计云量 24%。"
+        }
+      }
+    ]
+  },
+  "message": "ok"
+}
+```
+
+### 失败场景
+
+- 缺少坐标或坐标越界 -> HTTP `400` / `4001`
+- CelesTrak 首次请求失败且无缓存 -> HTTP `500` / `5001`
+
+---
+
+## 7. 邮箱账号认证
+
+### 契约级别
+
+**MVP 正式契约**
+
+### 注册
+
+`POST /api/auth/register`
+
+请求：
+
+```json
+{ "email": "observer@example.com", "password": "至少8个字符" }
+```
+
+成功返回用户与本次认领记录数，并设置 30 天有效的 `HttpOnly; SameSite=Lax` Session Cookie：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "user": {
+      "id": 1,
+      "email": "observer@example.com",
+      "emailVerified": false,
+      "createdAt": "2026-07-22T12:00:00.000Z"
+    },
+    "claimedRecords": 2
+  },
+  "message": "account created"
+}
+```
+
+失败：邮箱或密码格式错误 -> `4001`；邮箱已注册 -> `4091`；数据库错误 -> `5001`。
+
+### 登录
+
+`POST /api/auth/login`
+
+请求字段与注册相同。成功返回 `user` 与 `claimedRecords` 并轮换新会话；邮箱或密码错误统一返回 HTTP `401` / `4011`，不说明具体是哪一项错误。15 分钟内同一来源和邮箱连续失败 5 次后返回 HTTP `429` / `4291`。
+
+### 当前用户
+
+`GET /api/auth/me`
+
+已登录返回用户对象，游客或会话过期返回 `{ "user": null }`。响应禁止缓存。
+
+### 退出
+
+`POST /api/auth/logout`
+
+删除当前数据库会话并清空 Session Cookie。即使数据库暂时不可用，仍清空浏览器 Cookie。
+
+### 安全约束
+
+- 密码使用 Argon2id 哈希，内存成本 19 MiB、2 次迭代
+- Session Token 使用 32 字节密码学随机数，数据库仅保存 SHA-256 摘要
+- Session Cookie 不可被前端 JavaScript 读取，生产 HTTPS 环境启用 `Secure`
+- 当前版本不包含邮箱验证和密码找回，`email_verified_at` 仅预留结构
+
+---
+
+## 8. 系列观测成就
+
+### 获取成就中心
+
+`GET /api/achievements`
+
+按当前登录账号或匿名浏览器返回：
+
+- `confirmedCount`：确认观测总次数
+- `uniqueTargetCount`：确认过的不同目标数
+- `completedSeriesCount` / `totalSeriesCount`：徽章完成概览
+- `account`：登录邮箱；游客为 `null`
+- `series`：系列名称、说明、徽章键、进度、解锁时间和成员状态
+
+成员状态包含 `slug`、名称、是否确认、最近确认时间和观测次数。同一目标重复确认只增加观测次数，不重复增加系列进度；同一目标可以同时推进多个系列。
+
+### 解锁规则
+
+- 只有 `confirmed_at IS NOT NULL` 的记录参与计算
+- 系列全部成员均确认后完成
+- 登录用户写入 `user_achievement_unlocks`，删除原观测记录后徽章仍保留
+- 匿名用户按当前浏览器记录实时计算，登录或注册认领记录时补发永久解锁
+- 数据库不可用或未执行最新迁移 -> HTTP `500` / `5001`
+
+---
+
+## 9. 附近暗夜评估与今晚可见星表
+
+### 接口
+
+`GET /api/tools/site-conditions`
+
+### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `lat` | number | 是 | 评估点纬度，-90 到 90 |
+| `lng` | number | 是 | 评估点经度，-180 到 180 |
+
+### 成功返回字段
+
+- `days`：今天/今晚与明天的看星、晚霞、早霞天气评分
+- `lightPollution`：NASA VIIRS 夜间灯光的可用状态、暗夜分数、标签、摘要和来源年份
+- `visibleSky`：参考时间、极限星等、月光信息、完整可见目标和首页前四项
+- `visibleSky.objects[]`：`slug`、名称、对象类型、方向、方位角、仰角、视星等和可见难度
+
+`visibleSky.recommended` 必须严格等于 `visibleSky.objects.slice(0, 4)`；同一经纬度下，`GET /api/recommendations` 必须使用这四项组织首页推荐。
+
+### 失败场景
+
+- 经纬度缺失或越界 -> HTTP `400` / `4001`
+- 天气数据无法获取 -> HTTP `500` / `5001`
+- NASA 夜光图层暂时不可用 -> 接口仍成功，`lightPollution.available = false`，按中等夜光保守估算

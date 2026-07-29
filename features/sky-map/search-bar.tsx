@@ -6,13 +6,19 @@ import { searchObjects } from "./search-data";
 import { withTimeContext, type TimeContextKey } from "@/lib/time-context";
 
 const typeLabel: Record<string, string> = {
+  star: "恒星",
   planet: "行星",
   bright_star: "亮星",
   constellation: "星座",
+  galaxy: "星系",
+  nebula: "星云",
+  open_cluster: "疏散星团",
+  globular_cluster: "球状星团",
 };
 
 interface SearchBarProps {
   timeContext: TimeContextKey;
+  mode?: "2d" | "observe" | "ar";
 }
 
 function SearchIcon() {
@@ -33,7 +39,7 @@ function SearchIcon() {
   );
 }
 
-export default function SearchBar({ timeContext }: SearchBarProps) {
+export default function SearchBar({ timeContext, mode = "2d" }: SearchBarProps) {
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
   const router = useRouter();
@@ -43,7 +49,7 @@ export default function SearchBar({ timeContext }: SearchBarProps) {
 
   function handleSelect(slug: string) {
     const url = withTimeContext(
-      `/sky-map?target=${slug}&source=search`,
+      `/sky-map?target=${slug}&source=search&mode=${mode}`,
       timeContext,
     );
     router.push(url);
@@ -67,7 +73,7 @@ export default function SearchBar({ timeContext }: SearchBarProps) {
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 150)}
           placeholder="搜索天体或星座"
-          className="w-40 bg-transparent text-xs text-white/65 placeholder:text-white/20 outline-none"
+          className="w-20 bg-transparent text-xs text-white/65 placeholder:text-white/20 outline-none sm:w-40"
         />
       </div>
 

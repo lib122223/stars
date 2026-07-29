@@ -1,10 +1,12 @@
-/**
- * 搜索对象池 V2 — 核心对象 + 本地亮星数据层合并
- *
- * 接入 lib/astronomy/bright-stars.ts，扩展搜索结果池。
- * 核心对象与亮星层重复时（vega / sirius / betelgeuse / polaris），保留核心对象版本。
- */
 import { activeBrightStars } from "@/lib/astronomy/bright-stars";
+import { activeConstellations } from "@/lib/astronomy/constellations";
+import { cosmicCatalog } from "@/lib/astronomy/cosmic-map";
+
+/**
+ * 搜索对象池 V3 — 数据库核心对象 + 本地活动亮星。
+ *
+ * 观察模式里能看到的命名亮星必须能搜索、能定位、能进入详情。
+ */
 
 export interface SearchEntry {
   slug: string;
@@ -14,38 +16,49 @@ export interface SearchEntry {
   searchAliases?: string[];
 }
 
-/** 核心对象池（可完整探索） */
-const corePool: SearchEntry[] = [
+const coreSearchPool: SearchEntry[] = [
+  { slug: "sun",        nameZh: "太阳",   nameEn: "Sun",        objectType: "star" },
+  { slug: "mercury",    nameZh: "水星",   nameEn: "Mercury",    objectType: "planet" },
   { slug: "jupiter",    nameZh: "木星",   nameEn: "Jupiter",    objectType: "planet" },
   { slug: "venus",      nameZh: "金星",   nameEn: "Venus",      objectType: "planet" },
   { slug: "mars",       nameZh: "火星",   nameEn: "Mars",       objectType: "planet" },
   { slug: "saturn",     nameZh: "土星",   nameEn: "Saturn",     objectType: "planet" },
+  { slug: "uranus",     nameZh: "天王星", nameEn: "Uranus",     objectType: "planet" },
+  { slug: "neptune",    nameZh: "海王星", nameEn: "Neptune",    objectType: "planet" },
   { slug: "moon",       nameZh: "月球",   nameEn: "Moon",       objectType: "planet" },
-  { slug: "vega",       nameZh: "织女星", nameEn: "Vega",       objectType: "bright_star" },
-  { slug: "sirius",     nameZh: "天狼星", nameEn: "Sirius",     objectType: "bright_star" },
-  { slug: "betelgeuse", nameZh: "参宿四", nameEn: "Betelgeuse", objectType: "bright_star" },
-  { slug: "polaris",    nameZh: "北极星", nameEn: "Polaris",    objectType: "bright_star" },
   { slug: "orion",      nameZh: "猎户座", nameEn: "Orion",      objectType: "constellation" },
 ];
 
-/** 合并搜索池：核心对象 + 亮星层去重 */
-function buildSearchPool(): SearchEntry[] {
-  const coreSlugs = new Set(corePool.map((o) => o.slug));
+const brightStarSearchPool: SearchEntry[] = activeBrightStars().map((s) => ({
+  slug: s.slug,
+  nameZh: s.nameZh,
+  nameEn: s.nameEn,
+  objectType: "bright_star",
+  searchAliases: s.searchAliases,
+}));
 
-  const starEntries: SearchEntry[] = activeBrightStars()
-    .filter((s) => !coreSlugs.has(s.slug))
-    .map((s) => ({
-      slug: s.slug,
-      nameZh: s.nameZh,
-      nameEn: s.nameEn,
-      objectType: "bright_star",
-      searchAliases: s.searchAliases,
-    }));
+const constellationSearchPool: SearchEntry[] = activeConstellations().map((constellation) => ({
+  slug: constellation.slug,
+  nameZh: constellation.nameZh,
+  nameEn: constellation.nameEn,
+  objectType: "constellation",
+  searchAliases: [constellation.abbreviation],
+}));
 
-  return [...corePool, ...starEntries];
-}
+const cosmicSearchPool: SearchEntry[] = cosmicCatalog.map((object) => ({
+  slug: object.slug,
+  nameZh: object.nameZh,
+  nameEn: object.nameEn,
+  objectType: object.type,
+  searchAliases: object.aliases,
+}));
 
-const searchPool = buildSearchPool();
+const searchPool: SearchEntry[] = [
+  ...coreSearchPool,
+  ...constellationSearchPool.filter((s) => !coreSearchPool.some((o) => o.slug === s.slug)),
+  ...brightStarSearchPool.filter((s) => !coreSearchPool.some((o) => o.slug === s.slug)),
+  ...cosmicSearchPool,
+];
 
 /** 基础匹配：中文名 / slug / 英文名 / searchAliases */
 export function searchObjects(query: string, max = 5): SearchEntry[] {

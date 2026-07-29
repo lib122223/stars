@@ -16,3 +16,26 @@ body {
   color: var(--color-foreground);
   font-family: var(--font-sans, Arial, Helvetica, sans-serif);
 }
+
+.input-field {
+  width: 100%;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 0.5rem;
+  background: rgb(0 0 0 / 0.22);
+  padding: 0.625rem 0.75rem;
+  color: rgb(255 255 255 / 0.78);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  outline: none;
+  color-scheme: dark;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.input-field::placeholder {
+  color: rgb(255 255 255 / 0.22);
+}
+
+.input-field:focus {
+  border-color: rgb(240 165 74 / 0.45);
+  background: rgb(0 0 0 / 0.3);
+}

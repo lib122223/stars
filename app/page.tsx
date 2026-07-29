@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import LoadingCard from "@/features/home/loading-card";
 import ErrorCard from "@/features/home/error-card";
+import TonightOverview from "@/features/home/tonight-overview";
+import SatelliteVisibilityAlert from "@/features/tools/satellite-visibility-alert";
 
 // ---- 数据契约（沿用现有 /api/recommendations 返回结构，只取本轮需要的字段） ----
 
@@ -28,20 +30,20 @@ type PageState =
 export default function HomePage() {
   const [state, setState] = useState<PageState>({ status: "loading" });
   const [geoState, setGeoState] = useState<GeoState>("pending");
-  const coordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
 
   //  浏览器定位
   useEffect(() => {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setGeoState("unavailable");
-      return;
+      const timer = window.setTimeout(() => setGeoState("unavailable"), 0);
+      return () => window.clearTimeout(timer);
     }
     const t = setTimeout(() => setGeoState("denied"), 8000);
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         clearTimeout(t);
-        coordsRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setGeoState("granted");
       },
       () => { clearTimeout(t); setGeoState("denied"); },
@@ -54,7 +56,7 @@ export default function HomePage() {
   const fetchData = useCallback(() => {
     setState({ status: "loading" });
     const p = new URLSearchParams();
-    const c = coordsRef.current;
+    const c = location;
     if (c) { p.set("lat", c.lat.toFixed(4)); p.set("lng", c.lng.toFixed(4)); }
     const qs = p.toString();
     fetch(`/api/recommendations${qs ? `?${qs}` : ""}`)
@@ -64,9 +66,13 @@ export default function HomePage() {
         else setState({ status: "error" });
       })
       .catch(() => setState({ status: "error" }));
-  }, []);
+  }, [location]);
 
-  useEffect(() => { if (geoState !== "pending") fetchData(); }, [fetchData, geoState]);
+  useEffect(() => {
+    if (geoState === "pending") return;
+    const timer = window.setTimeout(fetchData, 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchData, geoState]);
 
   // ---- 渲染 ----
 
@@ -93,7 +99,7 @@ export default function HomePage() {
     : "/sky-map";
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-lg flex-col justify-center px-4 py-6">
+    <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-2xl flex-col justify-center px-4 py-6">
 
       {/*  1. 开始看一下 — 最强主入口 */}
       <Link
@@ -125,6 +131,9 @@ export default function HomePage() {
           </span>
         )}
       </Link>
+
+      <TonightOverview location={location} />
+      <SatelliteVisibilityAlert location={location} className="mt-4" />
 
       {/* 2 / 3. 第二层 */}
       <div className="flex gap-3 mt-4">

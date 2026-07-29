@@ -1,5 +1,7 @@
 import { apiError, apiSuccess, ErrorCode } from "@/lib/api-response";
 import { query } from "@/data-access/db";
+import { activeBrightStars } from "@/lib/astronomy/bright-stars";
+import { findConstellationByName } from "@/lib/astronomy/constellations";
 
 interface CelestialRow {
   slug: string;
@@ -17,6 +19,32 @@ export async function GET(request: Request) {
     return apiError(ErrorCode.INVALID_PARAMS, "name is required");
   }
 
+  const q = name.trim().toLowerCase();
+  const localBrightStar = nameType && nameType !== "bright_star"
+    ? null
+    : activeBrightStars().find((s) =>
+        s.nameZh.toLowerCase() === q ||
+        s.nameEn.toLowerCase() === q ||
+        s.slug.toLowerCase() === q ||
+        s.searchAliases?.some((a) => a.toLowerCase() === q),
+      );
+  const localConstellation = nameType && nameType !== "constellation"
+    ? null
+    : findConstellationByName(name);
+
+  if (localConstellation) {
+    return apiSuccess({
+      matched: true,
+      object: {
+        slug: localConstellation.slug,
+        nameZh: localConstellation.nameZh,
+        nameEn: localConstellation.nameEn,
+        objectType: "constellation",
+      },
+      detailUrl: `/objects/${localConstellation.slug}`,
+    });
+  }
+
   try {
     // 第一阶段匹配策略：name 匹配 name_zh 或 name_en
     const rows = await query<CelestialRow>(
@@ -29,6 +57,19 @@ export async function GET(request: Request) {
     );
 
     if (rows.length === 0) {
+      if (localBrightStar) {
+        return apiSuccess({
+          matched: true,
+          object: {
+            slug: localBrightStar.slug,
+            nameZh: localBrightStar.nameZh,
+            nameEn: localBrightStar.nameEn,
+            objectType: "bright_star",
+          },
+          detailUrl: `/objects/${localBrightStar.slug}`,
+        });
+      }
+
       return apiSuccess({
         matched: false,
         object: null,
@@ -49,6 +90,19 @@ export async function GET(request: Request) {
       detailUrl: `/objects/${obj.slug}`,
     });
   } catch {
+    if (localBrightStar) {
+      return apiSuccess({
+        matched: true,
+        object: {
+          slug: localBrightStar.slug,
+          nameZh: localBrightStar.nameZh,
+          nameEn: localBrightStar.nameEn,
+          objectType: "bright_star",
+        },
+        detailUrl: `/objects/${localBrightStar.slug}`,
+      });
+    }
+
     return apiError(ErrorCode.INTERNAL_ERROR, "resolve lookup failed");
   }
 }

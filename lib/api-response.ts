@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 export const ErrorCode = {
   SUCCESS: 0,
   INVALID_PARAMS: 4001,
+  UNAUTHORIZED: 4011,
   NOT_FOUND: 4041,
+  CONFLICT: 4091,
+  RATE_LIMITED: 4291,
   INTERNAL_ERROR: 5001,
 } as const;
 
@@ -11,7 +14,10 @@ export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 
 const errorCodeToHttpStatus: Record<Exclude<ErrorCodeValue, 0>, number> = {
   [ErrorCode.INVALID_PARAMS]: 400,
+  [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.NOT_FOUND]: 404,
+  [ErrorCode.CONFLICT]: 409,
+  [ErrorCode.RATE_LIMITED]: 429,
   [ErrorCode.INTERNAL_ERROR]: 500,
 };
 

@@ -1,10 +1,15 @@
 import { Body, Equator, Horizon, MakeTime, Observer, SearchRiseSet, AstroTime } from "astronomy-engine";
+import { findBrightStar } from "@/lib/astronomy/bright-stars";
+import { stellarEquatorOfDate } from "@/lib/astronomy/stellar-coordinates";
 
 interface ObservationData {
   status: "visible" | "rising_soon" | "not_visible";
   statusText: string;
   direction: string;
+  azimuth: number;
   altitude: number;
+  latitude: number;
+  longitude: number;
   riseTime: string | null;
   setTime: string | null;
   advice: string;
@@ -25,6 +30,23 @@ const coordBySlug: Record<string, { raHours: number; decDeg: number }> = {
   orion: { raHours: 5.5, decDeg: 5.0 },
   "ursa-major": { raHours: 10.67, decDeg: 55.0 },
 };
+
+function coordinatesForSlug(slug: string): { raHours: number; decDeg: number } | null {
+  const brightStar = findBrightStar(slug);
+  if (brightStar?.isActive) {
+    return { raHours: brightStar.raHours, decDeg: brightStar.decDeg };
+  }
+  return coordBySlug[slug] ?? null;
+}
+
+function horizonForStar(
+  observer: Observer,
+  date: Date,
+  coordinates: { raHours: number; decDeg: number },
+) {
+  const eq = stellarEquatorOfDate(coordinates.raHours, coordinates.decDeg, date);
+  return Horizon(MakeTime(date), observer, eq.ra, eq.dec);
+}
 
 /** 8 方位中文 */
 function azToDirection(az: number): string {
@@ -63,7 +85,6 @@ function starRiseSet(
   observer: Observer,
   now: Date,
 ): { rise: Date | null; set: Date | null } {
-  const raDeg = raHours * 15;
   const stepMin = 5;
   const scanHours = 24;
   const steps = (scanHours * 60) / stepMin;
@@ -74,7 +95,7 @@ function starRiseSet(
 
   for (let i = 0; i <= steps; i++) {
     const t = new Date(now.getTime() + i * stepMin * 60_000);
-    const hor = Horizon(MakeTime(t), observer, raDeg, decDeg);
+    const hor = horizonForStar(observer, t, { raHours, decDeg });
     const alt = hor.altitude;
 
     if (prevAlt != null) {
@@ -110,16 +131,15 @@ function willRiseSoon(
       }
     } catch { /* fallthrough */ }
   } else {
-    const c = coordBySlug[slug];
+    const c = coordinatesForSlug(slug);
     if (!c) return false;
 
-    const raDeg = c.raHours * 15;
     const stepMin = 5;
     const steps = (hours * 60) / stepMin;
 
     for (let i = 0; i <= steps; i++) {
       const t = new Date(now.getTime() + i * stepMin * 60_000);
-      const hor = Horizon(MakeTime(t), observer, raDeg, c.decDeg);
+      const hor = horizonForStar(observer, t, c);
       if (hor.altitude > 0) return true;
     }
   }
@@ -143,9 +163,9 @@ export function computeObservation(slug: string, lat: number, lng: number, obsDa
     alt = hor.altitude;
     az = hor.azimuth;
   } else {
-    const c = coordBySlug[slug];
+    const c = coordinatesForSlug(slug);
     if (!c) return null;
-    const hor = Horizon(time, observer, c.raHours * 15, c.decDeg);
+    const hor = horizonForStar(observer, now, c);
     alt = hor.altitude;
     az = hor.azimuth;
     raHours = c.raHours;
@@ -194,5 +214,17 @@ export function computeObservation(slug: string, lat: number, lng: number, obsDa
     advice = "今晚不适合观测，建议先看其他天体";
   }
 
-  return { status, statusText, direction: azToDirection(az), altitude: alt, riseTime, setTime, advice };
+  const normalizedAzimuth = ((az % 360) + 360) % 360;
+  return {
+    status,
+    statusText,
+    direction: azToDirection(normalizedAzimuth),
+    azimuth: normalizedAzimuth,
+    altitude: alt,
+    latitude: lat,
+    longitude: lng,
+    riseTime,
+    setTime,
+    advice,
+  };
 }

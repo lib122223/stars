@@ -1,5 +1,8 @@
 import { apiError, apiSuccess, ErrorCode } from "@/lib/api-response";
 import { query } from "@/data-access/db";
+import { findBrightStar } from "@/lib/astronomy/bright-stars";
+import { buildBrightStarCard, getRelatedBrightStars } from "@/lib/astronomy/bright-star-details";
+import { buildConstellationCard, getConstellation, getConstellationMembers } from "@/lib/astronomy/constellations";
 
 interface ObjectRow {
   slug: string;
@@ -63,6 +66,25 @@ export async function GET(
   { params }: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await params;
+  const localBrightStar = findBrightStar(slug);
+  const localConstellation = getConstellation(slug);
+
+  if (localConstellation) {
+    const card = buildConstellationCard(localConstellation);
+    return apiSuccess({
+      object: {
+        slug: localConstellation.slug,
+        nameZh: localConstellation.nameZh,
+        nameEn: localConstellation.nameEn,
+        objectType: "constellation",
+      },
+      card,
+      related: getConstellationMembers(localConstellation).map((star) => ({
+        slug: star.slug,
+        nameZh: star.nameZh,
+      })),
+    });
+  }
 
   try {
     const objRows = await query<ObjectRow>(
@@ -74,6 +96,24 @@ export async function GET(
     );
 
     if (objRows.length === 0) {
+      if (localBrightStar?.isActive) {
+        const card = buildBrightStarCard(localBrightStar);
+        return apiSuccess({
+          object: {
+            slug: localBrightStar.slug,
+            nameZh: localBrightStar.nameZh,
+            nameEn: localBrightStar.nameEn,
+            objectType: "bright_star",
+          },
+          card: {
+            whatIsIt: card.whatIsIt,
+            whyWatchIt: card.whyWatchIt,
+            whatNext: card.whatNext,
+          },
+          related: getRelatedBrightStars(localBrightStar),
+        });
+      }
+
       return apiError(ErrorCode.NOT_FOUND, "object not found");
     }
 
@@ -116,6 +156,24 @@ export async function GET(
       related,
     });
   } catch {
+    if (localBrightStar?.isActive) {
+      const card = buildBrightStarCard(localBrightStar);
+      return apiSuccess({
+        object: {
+          slug: localBrightStar.slug,
+          nameZh: localBrightStar.nameZh,
+          nameEn: localBrightStar.nameEn,
+          objectType: "bright_star",
+        },
+        card: {
+          whatIsIt: card.whatIsIt,
+          whyWatchIt: card.whyWatchIt,
+          whatNext: card.whatNext,
+        },
+        related: getRelatedBrightStars(localBrightStar),
+      });
+    }
+
     return apiError(ErrorCode.INTERNAL_ERROR, "object lookup failed");
   }
 }
