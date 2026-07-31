@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildSecondCalibrationReferences,
   buildCalibrationReferences,
@@ -104,13 +104,31 @@ export default function ObservationAssistant({
     poseRef.current = rawOrientation;
   }, [rawOrientation]);
 
-  function stopCalibrationCamera() {
+  const stopCalibrationCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-  }
+  }, []);
 
-  useEffect(() => () => stopCalibrationCamera(), []);
+  useEffect(() => () => stopCalibrationCamera(), [stopCalibrationCamera]);
+
+  useEffect(() => {
+    const releaseCamera = () => {
+      stopCalibrationCamera();
+      setCalibrating(false);
+      setMessage("页面离开后已释放摄像头，请返回后重新开始校准。");
+    };
+    const releaseWhenHidden = () => {
+      if (document.visibilityState === "hidden") releaseCamera();
+    };
+
+    document.addEventListener("visibilitychange", releaseWhenHidden);
+    window.addEventListener("pagehide", releaseCamera);
+    return () => {
+      document.removeEventListener("visibilitychange", releaseWhenHidden);
+      window.removeEventListener("pagehide", releaseCamera);
+    };
+  }, [stopCalibrationCamera]);
 
   useEffect(() => {
     if (!calibrating || !videoRef.current || !streamRef.current) return;
@@ -138,6 +156,8 @@ export default function ObservationAssistant({
       return;
     }
     try {
+      stopCalibrationCamera();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {

@@ -1,4 +1,4 @@
-import { commonsFile, commonsImage, type AstronomyImageSource } from "@/lib/astronomy/image-sources";
+import { commonsFile, commonsImage, nasaFile, nasaImage, type AstronomyImageSource } from "@/lib/astronomy/image-sources";
 
 export type ReferenceImageKind = "object_photo";
 
@@ -31,6 +31,7 @@ interface ObjectRefInput {
 interface ObjectImageConfig {
   image: AstronomyImageSource;
   description: string;
+  src?: string;
 }
 
 const objectImagesBySlug: Record<string, ObjectImageConfig> = {
@@ -154,6 +155,66 @@ const objectImagesBySlug: Record<string, ObjectImageConfig> = {
     }),
     description: "星云是整体深空对象，摄影图能表达对象本体结构，因此保留在详情页本体影像中。",
   },
+  "triangulum-galaxy": {
+    image: nasaImage("PIA11969", { location: "Triangulum Galaxy (M33)", equipment: "NASA space telescope observations" }),
+    src: nasaFile("PIA11969"),
+    description: "M33 的完整星系结构与恒星形成区域。",
+  },
+  "whirlpool-galaxy": {
+    image: nasaImage("PIA10200", { location: "Whirlpool Galaxy (M51)", equipment: "Hubble Space Telescope" }),
+    src: nasaFile("PIA10200"),
+    description: "M51 的旋臂与伴星系相互作用结构。",
+  },
+  "sombrero-galaxy": {
+    image: nasaImage("0700064", { location: "Sombrero Galaxy (M104)", equipment: "Hubble Space Telescope" }),
+    src: nasaFile("0700064", "medium"),
+    description: "M104 的横贯尘埃带与中央核球。",
+  },
+  "centaurus-a": {
+    image: nasaImage("PIA04624", { location: "Centaurus A galaxy", equipment: "NASA space telescope observations" }),
+    src: nasaFile("PIA04624", "medium"),
+    description: "半人马座 A 的活动星系结构与尘埃带。",
+  },
+  "large-magellanic-cloud": {
+    image: nasaImage("iss071e418742", { location: "Large Magellanic Cloud", equipment: "International Space Station camera" }),
+    src: nasaFile("iss071e418742"),
+    description: "从轨道观察大麦哲伦云与南天星区。",
+  },
+  "small-magellanic-cloud": {
+    image: nasaImage("PIA25164", { location: "Small Magellanic Cloud", equipment: "Herschel, Planck, IRAS and COBE observations" }),
+    src: nasaFile("PIA25164"),
+    description: "小麦哲伦云的红外结构与星际尘埃。",
+  },
+  "lagoon-nebula": {
+    image: nasaImage("GSFC_20171208_Archive_e001955", { location: "Lagoon Nebula (M8)", equipment: "Hubble Space Telescope" }),
+    src: nasaFile("GSFC_20171208_Archive_e001955"),
+    description: "人马座方向的发光气体云与恒星形成区。",
+  },
+  "ring-nebula": {
+    image: nasaImage("PIA14443", { location: "Ring Nebula (M57)", equipment: "NASA space telescope observations" }),
+    src: nasaFile("PIA14443", "small"),
+    description: "环状星云的环形气体结构。",
+  },
+  "dumbbell-nebula": {
+    image: nasaImage("PIA04249", { location: "Dumbbell Nebula (M27)", equipment: "NASA space telescope observations" }),
+    src: nasaFile("PIA04249", "small"),
+    description: "哑铃星云的双叶轮廓。",
+  },
+  pleiades: {
+    image: nasaImage("PIA14096", { location: "Pleiades star cluster (M45)", equipment: "NASA infrared space telescope observations" }),
+    src: nasaFile("PIA14096"),
+    description: "昴星团的恒星成员与星际尘埃。",
+  },
+  hyades: {
+    image: nasaImage("GSFC_20171208_Archive_e001500", { location: "Hyades star cluster", equipment: "Hubble Space Telescope" }),
+    src: nasaFile("GSFC_20171208_Archive_e001500"),
+    description: "毕星团成员星与星团视场。",
+  },
+  "omega-centauri": {
+    image: nasaImage("PIA10372", { location: "Omega Centauri globular cluster", equipment: "NASA infrared space telescope observations" }),
+    src: nasaFile("PIA10372", "medium"),
+    description: "半人马座 Omega 球状星团的密集恒星结构。",
+  },
 };
 
 function toReferenceImage(object: ObjectRefInput, config: ObjectImageConfig): ReferenceImage {
@@ -162,7 +223,7 @@ function toReferenceImage(object: ObjectRefInput, config: ObjectImageConfig): Re
     kind: "object_photo",
     title: "本体真实影像",
     description: config.description,
-    src: commonsFile(config.image.file, 1200),
+    src: config.src ?? commonsFile(config.image.file, 1200),
     alt: `${object.nameZh} 本体真实影像`,
     meta: {
       credit: config.image.credit,

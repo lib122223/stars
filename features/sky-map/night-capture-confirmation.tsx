@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import Link from "next/link";
 import { Body, Equator, Horizon, MakeTime, Observer } from "astronomy-engine";
 import { activeBrightStars } from "@/lib/astronomy/bright-stars";
@@ -16,6 +16,12 @@ import {
   type NightPhotoQualityReason,
 } from "@/lib/astronomy/night-photo-quality";
 import { stellarEquatorOfDate } from "@/lib/astronomy/stellar-coordinates";
+import {
+  areCandidatesTooClose,
+  isCandidatePossible,
+} from "@/lib/astronomy/candidate-visibility";
+import type { PhotoArGuide } from "@/lib/astronomy/photo-ar-guide";
+import { getConstellationForStar } from "@/lib/astronomy/constellations";
 
 interface CaptureTarget {
   name: string;
@@ -31,6 +37,9 @@ interface NightCaptureConfirmationProps {
   calibration: Pick<ObservationCalibration, "estimatedAccuracy" | "referenceName"> | null;
   launchRequest?: number;
   launcherVisible?: boolean;
+  onPhotoGuideReady: (guide: PhotoArGuide) => void;
+  onPhotoGuideClear: () => void;
+  onRequestAr: () => void;
 }
 
 type Stage = "idle" | "guide" | "camera" | "processing" | "review" | "done";
@@ -289,7 +298,7 @@ function identifyCandidates(
         altitude: horizontal.altitude,
       };
     })
-    .filter((star) => star.altitude >= -2);
+    .filter((star) => isCandidatePossible(star.altitude));
 
   return matchBrightPointsToSky(
     points,
@@ -352,7 +361,20 @@ async function inspectImage(source: Blob | File, orientation: { azimuth: number;
   }
   const previewUrl = enhanced.canvas.toDataURL("image/jpeg", 0.9);
   release();
-  return { previewUrl, points, candidates, quality };
+  return {
+    previewUrl,
+    points,
+    candidates,
+    quality,
+    imageWidth: enhanced.width,
+    imageHeight: enhanced.height,
+    zoom,
+  };
+}
+
+function observationTargetName(candidate: Candidate) {
+  const constellation = getConstellationForStar(candidate.slug);
+  return constellation ? `${constellation.nameZh} · ${candidate.name}` : candidate.name;
 }
 
 export default function NightCaptureConfirmation({
@@ -363,6 +385,9 @@ export default function NightCaptureConfirmation({
   calibration,
   launchRequest = 0,
   launcherVisible = true,
+  onPhotoGuideReady,
+  onPhotoGuideClear,
+  onRequestAr,
 }: NightCaptureConfirmationProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -374,6 +399,12 @@ export default function NightCaptureConfirmation({
   const [brightPoints, setBrightPoints] = useState<BrightPoint[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [photoQuality, setPhotoQuality] = useState<NightPhotoQuality | null>(null);
+  const [photoAnalysis, setPhotoAnalysis] = useState<{
+    imageWidth: number;
+    imageHeight: number;
+    zoom: number;
+  } | null>(null);
+  const [selectedPhotoPoint, setSelectedPhotoPoint] = useState<BrightPoint | null>(null);
   const [message, setMessage] = useState("");
   const [burstProgress, setBurstProgress] = useState(0);
   const [capturing, setCapturing] = useState(false);
@@ -384,16 +415,35 @@ export default function NightCaptureConfirmation({
   const [newlyUnlocked, setNewlyUnlocked] = useState<UnlockedSeries[]>([]);
   const [capture, setCapture] = useState<{ capturedAt: string; azimuth: number | null; pitch: number | null; lat: number; lng: number; target: CaptureTarget | null } | null>(null);
 
-  function stopCamera() {
+  const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-  }
+  }, []);
 
   useEffect(() => () => {
     stopCamera();
     if (photoUrl) URL.revokeObjectURL(photoUrl);
-  }, [photoUrl]);
+  }, [photoUrl, stopCamera]);
+
+  useEffect(() => {
+    const releaseCamera = () => {
+      stopCamera();
+      setCapturing(false);
+      setStage((current) => current === "camera" || current === "processing" ? "guide" : current);
+      setMessage("页面离开后已释放摄像头，请返回后重新打开拍摄。");
+    };
+    const releaseWhenHidden = () => {
+      if (document.visibilityState === "hidden") releaseCamera();
+    };
+
+    document.addEventListener("visibilitychange", releaseWhenHidden);
+    window.addEventListener("pagehide", releaseCamera);
+    return () => {
+      document.removeEventListener("visibilitychange", releaseWhenHidden);
+      window.removeEventListener("pagehide", releaseCamera);
+    };
+  }, [stopCamera]);
 
   useEffect(() => {
     if (stage !== "camera" || !streamRef.current || !videoRef.current) return;
@@ -408,16 +458,49 @@ export default function NightCaptureConfirmation({
   }, [stage]);
 
   const start = useCallback(() => {
+    onPhotoGuideClear();
     setCapture({ capturedAt: new Date().toISOString(), azimuth: orientation?.azimuth ?? null, pitch: orientation?.pitch ?? null, lat: location.lat, lng: location.lng, target });
     setMessage(orientation ? "" : "当前没有方向传感器数据；仍可拍摄或上传，但无法可靠判断具体星名。");
     setStage("guide");
-  }, [location.lat, location.lng, orientation, target]);
+  }, [location.lat, location.lng, onPhotoGuideClear, orientation, target]);
 
   useEffect(() => {
     if (launchRequest === lastLaunchRequestRef.current) return;
     lastLaunchRequestRef.current = launchRequest;
     start();
   }, [launchRequest, start]);
+
+  function handlePhotoPointSelect(event: MouseEvent<HTMLImageElement>) {
+    if (!photoAnalysis) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const point = {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      brightness: 1,
+    } satisfies BrightPoint;
+    setSelectedPhotoPoint(point);
+
+    if (!capture || capture.azimuth == null || capture.pitch == null) {
+      setMessage("已选择照片位置，但缺少拍摄时的方向和仰角，无法匹配具体星名。请允许方向传感器后重拍。");
+      return;
+    }
+
+    const nextCandidates = identifyCandidates(
+      [point],
+      photoAnalysis.imageWidth,
+      photoAnalysis.imageHeight,
+      { azimuth: capture.azimuth, pitch: capture.pitch },
+      location,
+      new Date(capture.capturedAt),
+      calibration,
+      photoAnalysis.zoom,
+    );
+    setCandidates(nextCandidates);
+    setMessage(nextCandidates.length > 0
+      ? "已按你选择的亮点重新匹配，请确认实际看到的星星。"
+      : "已选择这个位置，但没有匹配到符合当前时间和方向的星星，请换一个亮点位置。");
+  }
 
   async function openCamera() {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -426,6 +509,8 @@ export default function NightCaptureConfirmation({
       return;
     }
     try {
+      stopCamera();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
       let stream: MediaStream | null = null;
       let lastError: unknown = null;
       const constraints: MediaStreamConstraints[] = [
@@ -483,6 +568,7 @@ export default function NightCaptureConfirmation({
       setBrightPoints(result.points);
       setCandidates(result.candidates);
       setPhotoQuality(result.quality);
+      setPhotoAnalysis({ imageWidth: result.imageWidth, imageHeight: result.imageHeight, zoom: result.zoom });
       setPhotoName(`网页夜景多帧择优-${captureZoom.toFixed(1)}x.jpg`);
       setStage("review");
     } catch {
@@ -498,6 +584,7 @@ export default function NightCaptureConfirmation({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || !file.type.startsWith("image/")) return;
+    onPhotoGuideClear();
     if (photoUrl) URL.revokeObjectURL(photoUrl);
     setStage("processing");
     try {
@@ -509,6 +596,7 @@ export default function NightCaptureConfirmation({
       setBrightPoints(result.points);
       setCandidates(result.candidates);
       setPhotoQuality(result.quality);
+      setPhotoAnalysis({ imageWidth: result.imageWidth, imageHeight: result.imageHeight, zoom: result.zoom });
       setPhotoName(file.name);
       setStage("review");
     } catch {
@@ -526,7 +614,7 @@ export default function NightCaptureConfirmation({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          targetName: candidate.name,
+          targetName: observationTargetName(candidate),
           targetSlug: candidate.slug,
           objectType: "bright_star",
           observedAt: capture?.capturedAt ?? new Date().toISOString(),
@@ -546,6 +634,26 @@ export default function NightCaptureConfirmation({
       if (achievementResponse.ok && achievementJson.code === 0) {
         setAchievement(achievementJson.data as AchievementSummary);
       }
+      if (capture?.azimuth != null && capture.pitch != null && photoAnalysis) {
+        onPhotoGuideReady({
+          id: `${candidate.slug}:${capture.capturedAt}`,
+          target: {
+            name: candidate.name,
+            type: "bright_star",
+            slug: candidate.slug,
+          },
+          pointX: candidate.pointX,
+          pointY: candidate.pointY,
+          imageWidth: photoAnalysis.imageWidth,
+          imageHeight: photoAnalysis.imageHeight,
+          zoom: photoAnalysis.zoom,
+          capturedAt: capture.capturedAt,
+          captureAzimuth: capture.azimuth,
+          capturePitch: capture.pitch,
+          targetAzimuth: candidate.azimuth,
+          targetAltitude: candidate.altitude,
+        });
+      }
       setConfirmedCandidate(candidate);
       setStage("done");
     } catch {
@@ -555,13 +663,16 @@ export default function NightCaptureConfirmation({
     }
   }
 
-  function reset() {
+  function reset(clearPhotoGuide = true) {
     stopCamera();
+    if (clearPhotoGuide) onPhotoGuideClear();
     if (photoUrl) URL.revokeObjectURL(photoUrl);
     setPhotoUrl(null);
     setBrightPoints([]);
     setCandidates([]);
     setPhotoQuality(null);
+    setPhotoAnalysis(null);
+    setSelectedPhotoPoint(null);
     setPhotoName("");
     setCapture(null);
     setMessage("");
@@ -597,26 +708,55 @@ export default function NightCaptureConfirmation({
   const qualityWarning = photoQuality?.warning
     ? qualityFeedback[photoQuality.warning]
     : null;
+  const crowdedCandidateSlugs = new Set<string>();
+  for (let firstIndex = 0; firstIndex < candidates.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < candidates.length; secondIndex += 1) {
+      const first = candidates[firstIndex];
+      const second = candidates[secondIndex];
+      if (areCandidatesTooClose(first, second)) {
+        crowdedCandidateSlugs.add(first.slug);
+        crowdedCandidateSlugs.add(second.slug);
+      }
+    }
+  }
+  const crowdedCandidates = candidates.filter((candidate) => crowdedCandidateSlugs.has(candidate.slug));
 
   return <div className="pointer-events-auto absolute left-4 right-4 top-20 z-40 mx-auto max-w-xl rounded-2xl border border-white/15 bg-[#07121b]/95 p-4 text-white/75 shadow-2xl shadow-black/40 backdrop-blur-xl">
     <input ref={inputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void handleUpload(event)} />
     {stage === "guide" && <>
-      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-white/90">拍摄星空照片</p><p className="mt-1 text-xs leading-relaxed text-white/50">系统会记录目标、时间、地点、方向和仰角。打开后置相机后，可使用手机系统的夜景或专业模式。</p></div><button type="button" onClick={reset} className="text-xs text-white/35">取消</button></div>
+      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-white/90">拍摄星空照片</p><p className="mt-1 text-xs leading-relaxed text-white/50">系统会记录目标、时间、地点、方向和仰角。打开后置相机后，可使用手机系统的夜景或专业模式。</p></div><button type="button" onClick={() => reset()} className="text-xs text-white/35">取消</button></div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-white/55"><span>目标：{capture?.target?.name ?? "未选择"}</span><span>方向：{capture?.azimuth != null ? `${directionFromAzimuth(capture.azimuth)} ${Math.round(capture.azimuth)}°` : "未记录"}</span><span>仰角：{capture?.pitch != null ? `${Math.round(capture.pitch)}°` : "未记录"}</span><span>位置：{capture ? `${capture.lat.toFixed(2)}°, ${capture.lng.toFixed(2)}°` : "--"}</span></div>
       <p className="mt-3 rounded-lg border border-cyan-100/10 bg-cyan-100/[0.04] px-3 py-2 text-[11px] leading-relaxed text-cyan-50/65">使用后置摄像头，关闭闪光灯，避开路灯。建议开启系统相机的夜景或专业模式。</p>
-      <div className="mt-3"><button type="button" onClick={() => void openCamera()} className="w-full rounded-lg border border-cyan-200/25 bg-cyan-200/10 px-3 py-2 text-xs text-cyan-50/85">打开后置相机</button></div>
+       <div className="mt-3 grid gap-2 sm:grid-cols-2">
+         <button type="button" onClick={() => void openCamera()} className="rounded-lg border border-cyan-200/25 bg-cyan-200/10 px-3 py-2 text-xs text-cyan-50/85">打开后置相机</button>
+         <Link href="/tools/device-simulator?mode=camera&returnTo=%2Fsky-map%3Fmode%3Dobserve" className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-center text-xs text-white/60 hover:bg-white/[0.08] hover:text-white/80">相机设置助手</Link>
+       </div>
     </>}
-    {stage === "camera" && <><div className="overflow-hidden rounded-lg bg-black"><video ref={videoRef} muted autoPlay playsInline className="max-h-64 w-full object-contain transition-transform duration-150" style={{ filter: "brightness(1.28) contrast(1.08)", transform: `scale(${cameraZoom})` }} /></div><div className="mt-3 flex items-center gap-2"><span className="shrink-0 text-[11px] text-white/45">放大 {cameraZoom.toFixed(1)}×</span><input aria-label="相机放大倍率" type="range" min="1" max="3" step="0.1" value={cameraZoom} onChange={(event) => setCameraZoom(Number(event.target.value))} disabled={capturing} className="min-w-0 flex-1 accent-cyan-200" /></div><div className="mt-3 flex gap-2"><button type="button" disabled={capturing} onClick={() => void captureFrame()} className="flex-1 rounded-lg border border-cyan-200/25 bg-cyan-200/10 px-3 py-2 text-xs text-cyan-50/85 disabled:cursor-wait disabled:opacity-60">{capturing ? `正在采集 ${burstProgress}/${BURST_FRAME_COUNT} 帧` : "拍摄并识别"}</button><button type="button" disabled={capturing} onClick={reset} className="rounded-lg px-3 py-2 text-xs text-white/45 disabled:opacity-40">取消</button></div></>}
+    {stage === "camera" && <><div className="overflow-hidden rounded-lg bg-black"><video ref={videoRef} muted autoPlay playsInline className="max-h-64 w-full object-contain transition-transform duration-150" style={{ filter: "brightness(1.28) contrast(1.08)", transform: `scale(${cameraZoom})` }} /></div><div className="mt-3 flex items-center gap-2"><span className="shrink-0 text-[11px] text-white/45">放大 {cameraZoom.toFixed(1)}×</span><input aria-label="相机放大倍率" type="range" min="1" max="3" step="0.1" value={cameraZoom} onChange={(event) => setCameraZoom(Number(event.target.value))} disabled={capturing} className="min-w-0 flex-1 accent-cyan-200" /></div><div className="mt-3 flex gap-2"><button type="button" disabled={capturing} onClick={() => void captureFrame()} className="flex-1 rounded-lg border border-cyan-200/25 bg-cyan-200/10 px-3 py-2 text-xs text-cyan-50/85 disabled:cursor-wait disabled:opacity-60">{capturing ? `正在采集 ${burstProgress}/${BURST_FRAME_COUNT} 帧` : "拍摄并识别"}</button><button type="button" disabled={capturing} onClick={() => reset()} className="rounded-lg px-3 py-2 text-xs text-white/45 disabled:opacity-40">取消</button></div></>}
     {stage === "processing" && <div className="py-5 text-center"><p className="text-sm text-white/80">正在处理夜景照片</p><p className="mt-1 text-xs text-white/45">正在进行多帧择优、增亮、降噪和星点匹配。</p></div>}
     {stage === "review" && <>
-      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-white/90">识别结果</p><p className="mt-1 text-[11px] text-white/45">{photoName}</p></div><button type="button" onClick={reset} className="text-xs text-white/35">重新拍摄</button></div>
-      {photoUrl && <img src={photoUrl} alt="星空照片预览" className="mt-3 max-h-48 w-full rounded-lg object-contain bg-black/35" />}
+      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-white/90">识别结果</p><p className="mt-1 text-[11px] text-white/45">{photoName}</p></div><button type="button" onClick={() => reset()} className="text-xs text-white/35">重新拍摄</button></div>
+      {photoUrl && <div className="relative mx-auto mt-3 w-fit max-w-full overflow-hidden rounded-lg bg-black/35">
+        <img
+          src={photoUrl}
+          alt="星空照片预览，点击选择目标亮点"
+          className="block max-h-48 max-w-full cursor-crosshair object-contain"
+          onClick={handlePhotoPointSelect}
+        />
+        {selectedPhotoPoint && <span
+          className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-200 shadow-[0_0_18px_rgba(251,191,36,0.5)]"
+          style={{ left: `${selectedPhotoPoint.x * 100}%`, top: `${selectedPhotoPoint.y * 100}%` }}
+          aria-hidden="true"
+        />}
+      </div>}
+      <p className="mt-2 text-[10px] text-white/35">点击照片中的目标亮点，可按手动位置重新匹配</p>
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-white/55"><span>检测亮点：{brightPoints.length}</span><span>方向：{capture?.azimuth != null ? `${directionFromAzimuth(capture.azimuth)} ${Math.round(capture.azimuth)}°` : "未记录"}</span><span>仰角：{capture?.pitch != null ? `${Math.round(capture.pitch)}°` : "未记录"}</span><span>目标：{capture?.target?.name ?? target?.name ?? "未选择"}</span><span className="col-span-2">识别尺度：{calibration ? `${calibration.referenceName}校准 · 预计 ±${Math.round(calibration.estimatedAccuracy)}°` : "未校准 · 宽松匹配"}</span></div>
       {candidates.length > 0 && qualityWarning && <div className="mt-3 rounded-lg border border-amber-100/15 bg-amber-100/[0.05] px-3 py-2"><p className="text-xs font-medium text-amber-50/80">{qualityWarning.title}</p><p className="mt-1 text-[11px] leading-relaxed text-amber-50/55">{qualityWarning.detail} 当前候选匹配度已降低。</p></div>}
+      {crowdedCandidates.length > 1 && <div className="mt-3 rounded-lg border border-amber-100/15 bg-amber-100/[0.05] px-3 py-2"><p className="text-xs font-medium text-amber-50/85">检测到近邻候选</p><p className="mt-1 text-[11px] leading-relaxed text-amber-50/60">这些目标在真实天空中的角距离很小，系统已按拍摄时间、经纬度和地平线过滤不可能的候选；剩余目标需要你确认实际看到的是哪一个。</p></div>}
       {candidates.length > 0 ? <div className="mt-3 space-y-1.5"><p className="text-[11px] text-emerald-100/70">疑似星星：选择你实际观测到的目标</p>{candidates.map((candidate) => <div key={candidate.slug} className="flex items-center justify-between gap-3 rounded-lg border border-emerald-100/10 bg-emerald-100/[0.04] px-3 py-2 text-xs"><span>{candidate.name}<span className="ml-2 text-emerald-100/45">匹配度 {Math.round(candidate.score * 100)}%</span><span className="mt-0.5 block text-[10px] text-white/35">{directionFromAzimuth(candidate.azimuth)} {Math.round(candidate.azimuth)}° · 仰角 {Math.round(candidate.altitude)}°</span><span className="mt-0.5 block text-[10px] text-white/30">照片方位误差 {candidate.azimuthError.toFixed(1)}° · 照片仰角误差 {candidate.altitudeError.toFixed(1)}° · {candidate.calibrated ? "已校准" : "未校准"}</span></span><button type="button" disabled={confirmingSlug != null} onClick={() => void confirmCandidate(candidate)} className="shrink-0 rounded-md border border-emerald-200/20 bg-emerald-200/10 px-2 py-1 text-[11px] text-emerald-50/80 disabled:cursor-wait disabled:opacity-50">{confirmingSlug === candidate.slug ? "确认中…" : "确认观测"}</button></div>)}</div> : <div className="mt-3 rounded-lg border border-amber-100/15 bg-amber-100/[0.05] px-3 py-3"><p className="text-xs font-medium text-amber-50/85">{failedQuality.title}</p><p className="mt-1 text-[11px] leading-relaxed text-amber-50/60">{failedQuality.detail}</p><p className="mt-2 text-[10px] text-white/30">当前照片不会生成候选，也不会计入观测成就。</p></div>}
       <p className="mt-3 text-[10px] leading-relaxed text-white/35">疑似结果只提供候选，不会增加成就；只有点击“确认观测”并成功保存记录后，才会计入已确认目标。</p>
       {message && <p className="mt-3 text-xs text-amber-100/70" role="status">{message}</p>}
     </>}
-    {stage === "done" && <div><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-emerald-50/90">已确认观测 · {confirmedCandidate?.name}</p><p className="mt-1 text-[11px] text-white/45">这次观测已经计入成就进度。</p>{newlyUnlocked.length > 0 && <p className="mt-2 text-sm font-medium text-amber-100/85">新徽章 · {newlyUnlocked.map((series) => series.name).join("、")}</p>}{achievement && <p className="mt-2 text-xs text-emerald-100/70">已确认 {achievement.uniqueTargetCount} 个目标 · 共 {achievement.confirmedCount} 次</p>}{achievement?.nextGoal && <p className="mt-1 text-[11px] text-white/40">距离下一阶段还需确认 {achievement.nextGoal - achievement.uniqueTargetCount} 个新目标</p>}</div><button type="button" onClick={reset} className="shrink-0 rounded-lg border border-white/15 px-3 py-2 text-xs text-white/55">完成</button></div><Link href="/achievements" className="mt-3 inline-flex text-xs text-accent/75 hover:text-accent">查看任务和徽章</Link></div>}
+    {stage === "done" && <div><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-emerald-50/90">已确认观测 · {confirmedCandidate?.name}</p><p className="mt-1 text-[11px] text-white/45">这次观测已经计入成就进度。</p>{newlyUnlocked.length > 0 && <p className="mt-2 text-sm font-medium text-amber-100/85">新徽章 · {newlyUnlocked.map((series) => series.name).join("、")}</p>}{achievement && <p className="mt-2 text-xs text-emerald-100/70">已确认 {achievement.uniqueTargetCount} 个目标 · 共 {achievement.confirmedCount} 次</p>}{achievement?.nextGoal && <p className="mt-1 text-[11px] text-white/40">距离下一阶段还需确认 {achievement.nextGoal - achievement.uniqueTargetCount} 个新目标</p>}</div><button type="button" onClick={() => reset()} className="shrink-0 rounded-lg border border-white/15 px-3 py-2 text-xs text-white/55">完成</button></div><button type="button" onClick={() => { onRequestAr(); reset(false); }} className="mt-3 w-full rounded-lg border border-cyan-200/25 bg-cyan-200/10 px-3 py-2 text-xs text-cyan-50/85">用 AR 寻找 {confirmedCandidate?.name}</button><Link href="/achievements" className="mt-3 inline-flex text-xs text-accent/75 hover:text-accent">查看任务和徽章</Link></div>}
   </div>;
 }

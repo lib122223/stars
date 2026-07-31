@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { activeBrightStars } from "@/lib/astronomy/bright-stars";
+import { getConstellationForStar } from "@/lib/astronomy/constellations";
 
 interface ObservationRecord {
   id: number;
@@ -45,6 +46,7 @@ type FormState = {
 };
 
 type PageState = "loading" | "ready" | "error";
+type TargetOption = { slug: string; name: string; type: string; displayName: string };
 
 const planets = [
   { slug: "moon", name: "月球", type: "planet" },
@@ -91,9 +93,16 @@ function formatLocation(record: ObservationRecord) {
   return `${record.latitude.toFixed(2)}°, ${record.longitude.toFixed(2)}°`;
 }
 
+function formatObservationTargetName(name: string, slug: string | null | undefined, type: string | null | undefined) {
+  if (!slug || (type !== "bright_star" && type !== "star")) return name;
+  const constellation = getConstellationForStar(slug);
+  if (!constellation || name.startsWith(`${constellation.nameZh} ·`)) return name;
+  return `${constellation.nameZh} · ${name}`;
+}
+
 function formFromRecord(record: ObservationRecord): FormState {
   return {
-    targetName: record.targetName,
+    targetName: formatObservationTargetName(record.targetName, record.targetSlug, record.objectType),
     targetSlug: record.targetSlug ?? "",
     objectType: record.objectType,
     observedAt: localDateTimeValue(new Date(record.observedAt)),
@@ -118,13 +127,14 @@ export default function ObservationsPage() {
   const [message, setMessage] = useState("");
   const [account, setAccount] = useState<AccountSummary | null>(null);
 
-  const objectOptions = useMemo(
+  const objectOptions = useMemo<TargetOption[]>(
     () => [
-      ...planets,
+      ...planets.map((item) => ({ ...item, displayName: item.name })),
       ...activeBrightStars().map((star) => ({
         slug: star.slug,
         name: star.nameZh,
         type: "bright_star",
+        displayName: formatObservationTargetName(star.nameZh, star.slug, "bright_star"),
       })),
     ],
     [],
@@ -159,7 +169,10 @@ export default function ObservationsPage() {
       const response = await fetch("/api/observations", { cache: "no-store" });
       const json = await response.json();
       if (!response.ok || json.code !== 0) throw new Error("records unavailable");
-      setRecords(json.data.records as ObservationRecord[]);
+      setRecords((json.data.records as ObservationRecord[]).map((record) => ({
+        ...record,
+        photos: Array.isArray(record.photos) ? record.photos : [],
+      })));
       setAccount((json.data.account as AccountSummary | null) ?? null);
       setPageState("ready");
     } catch {
@@ -194,19 +207,21 @@ export default function ObservationsPage() {
       const searchParams = new URLSearchParams(window.location.search);
       const targetName = searchParams.get("targetName");
       if (!targetName) return;
+      const targetSlug = searchParams.get("targetSlug") ?? "";
+      const objectType = searchParams.get("objectType") ?? "unknown";
       updateForm({
-        targetName,
-        targetSlug: searchParams.get("targetSlug") ?? "",
-        objectType: searchParams.get("objectType") ?? "unknown",
+        targetName: formatObservationTargetName(targetName, targetSlug, objectType),
+        targetSlug,
+        objectType,
       });
     }, 0);
     return () => window.clearTimeout(timer);
   }, [updateForm]);
 
   function handleTargetChange(value: string) {
-    const selected = objectOptions.find((item) => item.name === value);
+    const selected = objectOptions.find((item) => item.displayName === value || item.name === value);
     updateForm({
-      targetName: value,
+      targetName: selected?.displayName ?? value,
       targetSlug: selected?.slug ?? "",
       objectType: selected?.type ?? "unknown",
     });
@@ -226,8 +241,8 @@ export default function ObservationsPage() {
   }
 
   async function uploadPhotos(recordId: number, files: File[]): Promise<ObservationPhoto[]> {
-    const uploaded: ObservationPhoto[] = [];
-    for (const file of files) {
+    let completed = 0;
+    const uploaded = await Promise.all(files.map(async (file) => {
       const body = new FormData();
       body.append("file", file);
       const response = await fetch(`/api/observations/${recordId}/photos`, { method: "POST", body });
@@ -235,8 +250,10 @@ export default function ObservationsPage() {
       if (!response.ok || json.code !== 0 || !json.data?.photo) {
         throw new Error(json.message || "photo upload failed");
       }
-      uploaded.push(json.data.photo as ObservationPhoto);
-    }
+      completed += 1;
+      setMessage(`照片上传中 ${completed}/${files.length}`);
+      return json.data.photo as ObservationPhoto;
+    }));
     return uploaded;
   }
 
@@ -283,10 +300,14 @@ export default function ObservationsPage() {
       });
       const json = await response.json();
       if (!response.ok || json.code !== 0) throw new Error(json.message || "save failed");
-      let savedRecord = json.data.record as ObservationRecord;
+      let savedRecord = {
+        ...(json.data.record as ObservationRecord),
+        photos: Array.isArray(json.data.record?.photos) ? json.data.record.photos : [],
+      };
       let photoUploadFailed = false;
       if (pendingPhotos.length > 0) {
         try {
+          setMessage(`照片上传中 0/${pendingPhotos.length}`);
           const uploadedPhotos = await uploadPhotos(savedRecord.id, pendingPhotos);
           savedRecord = { ...savedRecord, photos: [...savedRecord.photos, ...uploadedPhotos] };
         } catch {
@@ -375,7 +396,7 @@ export default function ObservationsPage() {
                 required
               />
               <datalist id="observation-targets">
-                {objectOptions.map((item) => <option key={item.slug} value={item.name} />)}
+                {objectOptions.map((item) => <option key={item.slug} value={item.displayName} />)}
               </datalist>
             </Field>
 
@@ -408,6 +429,15 @@ export default function ObservationsPage() {
             </Field>
 
             <Field label="观测照片" htmlFor="observation-photos">
+              <div className="mb-2 rounded-lg border border-cyan-100/10 bg-cyan-100/[0.035] px-3 py-2.5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs text-cyan-50/75">建议使用手机专业模式或夜景模式拍摄</p>
+                    <p className="mt-1 text-[10px] leading-relaxed text-white/35">对焦到远处或无限远，保持手机稳定，再上传最清晰的一张。</p>
+                  </div>
+                  <Link href="/tools/device-simulator?mode=camera&returnTo=%2Fobservations%23observation-photos" className="shrink-0 rounded-md border border-cyan-200/20 bg-cyan-200/[0.08] px-2.5 py-1.5 text-center text-[10px] text-cyan-50/75 hover:bg-cyan-200/[0.14]">相机设置助手</Link>
+                </div>
+              </div>
               <input
                 key={photoInputKey}
                 id="observation-photos"
@@ -473,13 +503,13 @@ export default function ObservationsPage() {
                 <article key={record.id} className="rounded-xl border border-white/8 bg-surface/45 p-4 transition-colors hover:border-white/12">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h3 className="truncate text-base font-medium text-white/85">{record.targetName}</h3>
+                      <h3 className="truncate text-base font-medium text-white/85">{formatObservationTargetName(record.targetName, record.targetSlug, record.objectType)}</h3>
                       <p className="mt-1 text-xs text-accent/60">{formatDate(record.observedAt)}</p>
                   </div>
                   <button
                     type="button"
                     title="编辑记录"
-                    aria-label={`编辑 ${record.targetName} 的观测记录`}
+                    aria-label={`编辑 ${formatObservationTargetName(record.targetName, record.targetSlug, record.objectType)} 的观测记录`}
                     onClick={() => beginEdit(record)}
                     className="shrink-0 rounded-md px-2 py-2 text-xs text-white/35 transition-colors hover:bg-white/[0.06] hover:text-accent/80"
                   >
@@ -488,7 +518,7 @@ export default function ObservationsPage() {
                   <button
                     type="button"
                     title="删除记录"
-                      aria-label={`删除 ${record.targetName} 的观测记录`}
+                      aria-label={`删除 ${formatObservationTargetName(record.targetName, record.targetSlug, record.objectType)} 的观测记录`}
                       disabled={deletingId === record.id}
                       onClick={() => void handleDelete(record.id)}
                       className="shrink-0 rounded-md p-2 text-white/25 transition-colors hover:bg-red-400/10 hover:text-red-200/70 disabled:opacity-40"

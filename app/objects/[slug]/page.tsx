@@ -11,6 +11,7 @@ import ReferenceImagesSection from "@/features/objects/reference-images-section"
 import { computeObservation } from "@/features/objects/compute-observation";
 import { getReferenceImages } from "@/lib/astronomy/reference-images";
 import { type TimeContextKey, resolveTimeContext, withTimeContext } from "@/lib/time-context";
+import type { StellarProfile } from "@/lib/astronomy/stellar-profile";
 
 interface DetailData {
   object: {
@@ -18,6 +19,7 @@ interface DetailData {
     nameZh: string;
     nameEn: string;
     objectType: string;
+    stellarProfile?: StellarProfile | null;
   };
   card: {
     whatIsIt: string;
@@ -51,6 +53,7 @@ export default function ObjectDetailPage({
   const [geoCoords, setGeoCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [timeContext, setTimeContext] = useState<TimeContextKey>("now");
   const [obsData, setObsData] = useState<ObservationData | null>(null);
+  const [mediaImages, setMediaImages] = useState<ReturnType<typeof getReferenceImages> | null>(null);
   const returnMode = fromAr ? "ar" : fromObserve ? "observe" : "2d";
   const returnParams = new URLSearchParams({
     mode: returnMode,
@@ -104,6 +107,21 @@ export default function ObjectDetailPage({
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/objects/${slug}/media`)
+      .then((response) => response.json())
+      .then((json: { code?: number; data?: { images?: ReturnType<typeof getReferenceImages> } }) => {
+        if (!cancelled && json.code === 0 && json.data?.images) {
+          setMediaImages(json.data.images);
+        }
+      })
+      .catch(() => {
+        // The detail page keeps its local catalog fallback when media is unavailable.
+      });
+    return () => { cancelled = true; };
+  }, [slug]);
 
   if (state.status === "loading") {
     return (
@@ -184,7 +202,7 @@ export default function ObjectDetailPage({
   }
 
   const { object, card } = state.data;
-  const referenceImages = getReferenceImages(object);
+  const referenceImages = mediaImages ?? getReferenceImages(object);
 
   return (
     <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-xl flex-col px-4 py-12">
@@ -193,6 +211,7 @@ export default function ObjectDetailPage({
         nameZh={object.nameZh}
         nameEn={object.nameEn}
         objectType={object.objectType}
+        stellarProfile={object.stellarProfile}
       />
 
       {/* 2. 动态观测卡 — 第一主内容 */}
@@ -204,11 +223,19 @@ export default function ObjectDetailPage({
         <ReferenceImagesSection images={referenceImages} />
       </div>
 
+      <div className="mt-3 flex justify-end">
+        <Link
+          href={`/gallery?object=${encodeURIComponent(slug)}`}
+          className="text-xs text-accent/70 underline decoration-accent/20 underline-offset-4 hover:text-accent"
+        >
+          在画廊查看相关图片
+        </Link>
+      </div>
+
       {/* 3. 解释卡 — 降级到观测卡之后 */}
       <div className="mt-6">
         {card ? (
           <ExplorationCard
-            whatIsIt={card.whatIsIt}
             whyWatchIt={card.whyWatchIt}
             whatNext={card.whatNext}
           />

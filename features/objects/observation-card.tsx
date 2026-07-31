@@ -13,6 +13,7 @@ export interface ObservationData {
   longitude: number;
   riseTime: string | null;
   setTime: string | null;
+  bestMonths: string | null;
   advice: string;
 }
 
@@ -95,7 +96,12 @@ export default function ObservationCard({ data, timeContext, onTimeContextChange
           <p className="text-[10px] text-white/20 mb-1">落下</p>
           <p className="text-sm text-white/70">{data.setTime ?? "—"}</p>
         </div>
-        <div>
+        <div className="col-span-2 sm:col-span-3">
+          <p className="text-[10px] text-white/20 mb-1">更适合观测的月份</p>
+          <p className="text-sm text-white/70">{data.bestMonths ?? "随当前轨道变化"}</p>
+          <p className="mt-1 text-[10px] leading-relaxed text-white/30">按当地时间约 21:00 的地平高度估算，具体可见性仍会受到天气和光污染影响。</p>
+        </div>
+        <div className="col-span-2 sm:col-span-3">
           <p className="text-[10px] text-white/20 mb-1">今晚建议</p>
           <p className="text-sm text-white/70">{data.advice}</p>
         </div>

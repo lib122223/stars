@@ -6,10 +6,26 @@ CREATE TABLE IF NOT EXISTS celestial_objects (
   name_zh VARCHAR(255) NOT NULL,
   name_en VARCHAR(255) NOT NULL,
   object_type VARCHAR(50) NOT NULL,
+  ra_hours NUMERIC(8, 5),
+  dec_deg NUMERIC(8, 5),
+  magnitude NUMERIC(6, 3),
+  visual_size NUMERIC(8, 3),
+  display_color VARCHAR(20),
+  search_aliases TEXT[] NOT NULL DEFAULT '{}',
+  is_detail_ready BOOLEAN NOT NULL DEFAULT false,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE celestial_objects
+  ADD COLUMN IF NOT EXISTS ra_hours NUMERIC(8, 5),
+  ADD COLUMN IF NOT EXISTS dec_deg NUMERIC(8, 5),
+  ADD COLUMN IF NOT EXISTS magnitude NUMERIC(6, 3),
+  ADD COLUMN IF NOT EXISTS visual_size NUMERIC(8, 3),
+  ADD COLUMN IF NOT EXISTS display_color VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS search_aliases TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS is_detail_ready BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS object_cards (
   id SERIAL PRIMARY KEY,
@@ -20,6 +36,57 @@ CREATE TABLE IF NOT EXISTS object_cards (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS object_relations (
+  id BIGSERIAL PRIMARY KEY,
+  source_object_id INTEGER NOT NULL REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  target_object_id INTEGER NOT NULL REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  relation_type VARCHAR(40) NOT NULL DEFAULT 'next_explore',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT object_relations_distinct_check CHECK (source_object_id <> target_object_id),
+  UNIQUE (source_object_id, target_object_id, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS object_relations_source_idx
+  ON object_relations (source_object_id, relation_type, sort_order);
+
+CREATE INDEX IF NOT EXISTS object_relations_target_idx
+  ON object_relations (target_object_id, relation_type);
+
+CREATE TABLE IF NOT EXISTS constellations (
+  id SERIAL PRIMARY KEY,
+  object_id INTEGER NOT NULL UNIQUE REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  abbreviation VARCHAR(10) NOT NULL,
+  description TEXT NOT NULL,
+  anchor_slug VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS constellation_members (
+  constellation_id INTEGER NOT NULL REFERENCES constellations(id) ON DELETE CASCADE,
+  object_id INTEGER NOT NULL REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (constellation_id, object_id)
+);
+
+CREATE INDEX IF NOT EXISTS constellation_members_object_idx
+  ON constellation_members (object_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS constellation_lines (
+  constellation_id INTEGER NOT NULL REFERENCES constellations(id) ON DELETE CASCADE,
+  from_object_id INTEGER NOT NULL REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  to_object_id INTEGER NOT NULL REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (constellation_id, from_object_id, to_object_id)
+);
+
+CREATE INDEX IF NOT EXISTS constellation_lines_constellation_idx
+  ON constellation_lines (constellation_id, sort_order);
 
 CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
@@ -230,3 +297,105 @@ CREATE INDEX IF NOT EXISTS observation_photos_observation_idx
 CREATE INDEX IF NOT EXISTS observation_photos_user_idx
   ON observation_photos (user_id, created_at DESC)
   WHERE user_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS astronomy_events (
+  id BIGSERIAL PRIMARY KEY,
+  slug VARCHAR(255) NOT NULL UNIQUE,
+  event_type VARCHAR(50) NOT NULL,
+  name_zh VARCHAR(255) NOT NULL,
+  name_en VARCHAR(255) NOT NULL,
+  active_start_date DATE NOT NULL,
+  active_end_date DATE NOT NULL,
+  peak_date DATE NOT NULL,
+  zhr INTEGER NOT NULL CHECK (zhr >= 0),
+  intensity_level VARCHAR(20) NOT NULL,
+  summary TEXT NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT astronomy_events_date_check CHECK (active_end_date >= active_start_date)
+);
+
+CREATE INDEX IF NOT EXISTS astronomy_events_upcoming_idx
+  ON astronomy_events (event_type, peak_date)
+  WHERE is_active = true;
+
+CREATE TABLE IF NOT EXISTS event_observation_notes (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT NOT NULL UNIQUE REFERENCES astronomy_events(id) ON DELETE CASCADE,
+  recommended_time_window TEXT NOT NULL,
+  observation_tip TEXT NOT NULL,
+  ideal_location_type TEXT NOT NULL,
+  better_region_summary TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS event_observation_notes_event_idx
+  ON event_observation_notes (event_id);
+
+CREATE TABLE IF NOT EXISTS media_assets (
+  id BIGSERIAL PRIMARY KEY,
+  asset_key VARCHAR(255) NOT NULL UNIQUE,
+  media_type VARCHAR(40) NOT NULL,
+  gallery_category VARCHAR(80),
+  object_id INTEGER REFERENCES celestial_objects(id) ON DELETE CASCADE,
+  event_id BIGINT REFERENCES astronomy_events(id) ON DELETE CASCADE,
+  event_slug VARCHAR(255),
+  title VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  alt_text VARCHAR(255) NOT NULL,
+  storage_bucket VARCHAR(100),
+  storage_path TEXT,
+  external_url TEXT,
+  source_url TEXT NOT NULL,
+  credit TEXT NOT NULL,
+  location VARCHAR(255) NOT NULL,
+  captured_at VARCHAR(100) NOT NULL,
+  equipment VARCHAR(255) NOT NULL,
+  license TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT media_assets_type_check CHECK (
+    media_type IN ('gallery', 'object_reference', 'event_reference')
+  ),
+  CONSTRAINT media_assets_source_check CHECK (
+    storage_path IS NOT NULL OR external_url IS NOT NULL
+  )
+);
+
+CREATE INDEX IF NOT EXISTS media_assets_gallery_idx
+  ON media_assets (media_type, gallery_category, sort_order)
+  WHERE is_active = true;
+
+CREATE INDEX IF NOT EXISTS media_assets_object_idx
+  ON media_assets (object_id, media_type, sort_order)
+  WHERE is_active = true;
+
+CREATE INDEX IF NOT EXISTS media_assets_event_idx
+  ON media_assets (event_slug, media_type, sort_order)
+  WHERE is_active = true;
+
+ALTER TABLE media_assets
+  ADD COLUMN IF NOT EXISTS event_id BIGINT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'media_assets_event_id_fkey'
+      AND conrelid = 'media_assets'::regclass
+  ) THEN
+    ALTER TABLE media_assets
+      ADD CONSTRAINT media_assets_event_id_fkey
+      FOREIGN KEY (event_id) REFERENCES astronomy_events(id) ON DELETE CASCADE;
+  END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS media_assets_event_id_idx
+  ON media_assets (event_id, media_type, sort_order)
+  WHERE is_active = true;

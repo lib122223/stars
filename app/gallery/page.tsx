@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
-import SkyGallerySection from "@/features/gallery/sky-gallery-section";
-import { skyGalleryImages } from "@/lib/astronomy/sky-gallery";
+import GalleryPageClient from "@/features/gallery/gallery-page-client";
 
 export const metadata: Metadata = {
   title: "真实星空画廊 | Echo of Photons",
-  description: "真实星空、银河、星云、星系和行星摄影图集",
+  description: "地球实拍天空、深空、行星、流星雨和用户观测照片",
 };
 
 export default function GalleryPage() {
@@ -13,14 +12,14 @@ export default function GalleryPage() {
       <header className="mb-6 max-w-2xl">
         <p className="text-xs text-white/20">Gallery</p>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight text-white/85">
-          真实星空画廊
+          天空观测画廊
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-white/42">
-          这里集中展示星野、银河、星云、星系和行星照片。详情页只放能明确代表天体本体的图片，普通恒星和星空氛围图统一放在这里。
+          这里展示地球实拍天空、专业机构深空影像、行星月面，以及用户自己的观测照片。
         </p>
       </header>
 
-      <SkyGallerySection images={skyGalleryImages} />
+      <GalleryPageClient />
     </div>
   );
 }

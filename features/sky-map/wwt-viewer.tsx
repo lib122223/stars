@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import { lookupByCoord } from "./object-lookup";
+import type { AstronomyCatalog } from "@/lib/astronomy/catalog-types";
 
 interface CelestialClick {
   name: string;
@@ -15,6 +16,7 @@ interface WWTViewerProps {
   location: { lat: number; lng: number };
   onReady?: (info: { time: string; location: string }) => void;
   target: string | null;
+  catalog?: AstronomyCatalog;
 }
 
 /** target slug → RA(hours) / Dec(degrees) / zoom(degrees) */
@@ -57,6 +59,7 @@ export default function WWTViewer({
   location,
   onReady,
   target,
+  catalog,
 }: WWTViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wwtRef = useRef<WWTHandle | null>(null);
@@ -250,7 +253,7 @@ export default function WWTViewer({
       }
 
       if (!candidateName) {
-        const result = lookupByCoord(clickRA, clickDec);
+        const result = lookupByCoord(clickRA, clickDec, catalog?.brightStars);
         if (result) {
           candidateName = result.nameEn;
           candidateType = result.type;
@@ -279,7 +282,7 @@ export default function WWTViewer({
         }
 
         // 亮星/行星：通过 lookupByCoord 获取中文名
-        const fallback = lookupByCoord(clickRA, clickDec);
+        const fallback = lookupByCoord(clickRA, clickDec, catalog?.brightStars);
         if (fallback) {
           onObjectClick({
             name: fallback.nameZh,
@@ -299,7 +302,7 @@ export default function WWTViewer({
           .replace(/\s/g, ""),
       });
     },
-    [onObjectClick],
+    [onObjectClick, catalog],
   );
 
   return (

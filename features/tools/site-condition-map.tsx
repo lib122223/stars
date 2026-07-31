@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { DaySiteCondition as ApiDaySiteCondition } from "@/lib/site-conditions";
 
 interface SitePoint {
   lat: number;
@@ -12,10 +13,13 @@ interface ConditionScore {
   score: number;
   label: string;
   bestTime: string | null;
+  bestTimeIso?: string | null;
   bestReferenceTime: string | null;
   windowStart: string | null;
   windowEnd: string | null;
   direction: string;
+  azimuth?: number | null;
+  altitude?: number | null;
   summary: string;
   reasons: string[];
 }
@@ -62,6 +66,7 @@ interface VisibleSkyObject {
 interface SiteConditionMapProps {
   currentLocation: SitePoint;
   locationLabel: string;
+  onDataChange?: (data: { days: ApiDaySiteCondition[] }) => void;
 }
 
 type LoadState =
@@ -141,7 +146,7 @@ function scoreBar(score: number): string {
   return "bg-white/30";
 }
 
-export default function SiteConditionMap({ currentLocation, locationLabel }: SiteConditionMapProps) {
+export default function SiteConditionMap({ currentLocation, locationLabel, onDataChange }: SiteConditionMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [center, setCenter] = useState(currentLocation);
@@ -179,7 +184,9 @@ export default function SiteConditionMap({ currentLocation, locationLabel }: Sit
       .then((res) => res.json())
       .then((json) => {
         if (json.code === 0 && json.data) {
-          setState({ status: "ok", requestKey, data: json.data as SiteConditions });
+          const data = json.data as SiteConditions;
+          setState({ status: "ok", requestKey, data });
+          onDataChange?.(data as { days: ApiDaySiteCondition[] });
         } else {
           setState({ status: "error", requestKey });
         }
@@ -189,7 +196,7 @@ export default function SiteConditionMap({ currentLocation, locationLabel }: Sit
       });
 
     return () => controller.abort();
-  }, [requestKey, selected.lat, selected.lng]);
+  }, [onDataChange, requestKey, selected.lat, selected.lng]);
 
   const mapGeometry = useMemo(() => {
     if (size.w <= 0 || size.h <= 0) return null;
@@ -394,11 +401,6 @@ export default function SiteConditionMap({ currentLocation, locationLabel }: Sit
         {currentState.status === "ok" && (
           <>
             <DarkSkySummary data={currentState.data} />
-            <div className="grid gap-3 lg:grid-cols-2">
-              {currentState.data.days.map((day) => (
-                <DayCard key={day.label} day={day} />
-              ))}
-            </div>
             <p className="mt-2 text-[10px] text-white/24">
               数据源：{currentState.data.dataSource ?? "Open-Meteo 小时天气预报 + 空气质量预报"}；点击地图位置后按该经纬度重新评估。
             </p>
@@ -597,6 +599,8 @@ function Marker({
   );
 }
 
+// Kept as a local fallback renderer for the map data shape; the timeline owns the visible event cards.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function DayCard({ day }: { day: DaySiteCondition }) {
   return (
     <article className="rounded-lg border border-white/10 bg-[#101820]/60 p-4">

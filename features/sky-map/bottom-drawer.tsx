@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import type { ActiveAchievementTask } from "@/features/sky-map/achievement-task-strip";
+import { getConstellationForStar } from "@/lib/astronomy/constellations";
 
 interface GuideContent {
   target: string;
@@ -25,6 +27,7 @@ interface BottomDrawerProps {
   isArMode?: boolean;
   mode?: "2d" | "observe" | "ar";
   viewPose?: { azimuth: number; pitch: number; gamma?: number } | null;
+  achievementTask?: ActiveAchievementTask | null;
 }
 
 const typeLabel: Record<string, string> = {
@@ -50,9 +53,13 @@ export default function BottomDrawer({
   isArMode = false,
   mode,
   viewPose = null,
+  achievementTask = null,
 }: BottomDrawerProps) {
+  const observationTargetName = selected && (selected.type === "bright_star" || selected.type === "star")
+    ? `${getConstellationForStar(selected.slug)?.nameZh ?? ""}${getConstellationForStar(selected.slug) ? " · " : ""}${selected.name}`
+    : selected?.name;
   const observationHref = selected
-    ? `/observations?targetName=${encodeURIComponent(selected.name)}&targetSlug=${encodeURIComponent(selected.slug)}&objectType=${encodeURIComponent(selected.type)}`
+    ? `/observations?targetName=${encodeURIComponent(observationTargetName ?? selected.name)}&targetSlug=${encodeURIComponent(selected.slug)}&objectType=${encodeURIComponent(selected.type)}`
     : "/observations";
   const detailSource = mode ?? (isArMode ? "ar" : isObservationMode ? "observe" : "2d");
   const detailParams = new URLSearchParams({ from: detailSource });
@@ -74,9 +81,14 @@ export default function BottomDrawer({
               }`}
             />
             <div>
-              <p className="text-sm font-medium text-white/90">
-                {selected.name}
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-white/90">
+                  {selected.name}
+                </p>
+                <span className="rounded border border-cyan-200/20 bg-cyan-200/[0.08] px-1.5 py-0.5 text-[9px] text-cyan-100/70">
+                  已选中
+                </span>
+              </div>
               <p className="text-xs text-white/40">
                 {typeLabel[selected.type] ?? selected.type}
                 {selected.isPreviewOnly
@@ -85,6 +97,15 @@ export default function BottomDrawer({
                   ? ` · ${obsStatus}`
                   : selected.type !== "coord" && " · 已找到目标"}
               </p>
+              {achievementTask?.selectedMember && (
+                <p className="mt-1 text-[10px] text-amber-100/65">
+                  {achievementTask.selectedMember.confirmed
+                    ? `已计入${achievementTask.series.name}系列`
+                    : achievementTask.selectedMember.slug === achievementTask.nextMember?.slug
+                      ? "当前成就目标：拍摄识别后点击确认观测"
+                      : `${achievementTask.series.name}系列目标`}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">

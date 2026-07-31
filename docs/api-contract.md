@@ -379,6 +379,21 @@
 | `nameEn` | string | 英文名 |
 | `objectType` | string | 对象类型 |
 
+#### `stellarProfile`（`bright_star`、`star`、`planet`）
+
+恒星、太阳系行星和月球对象会额外返回以下字段；其他对象为 `null` 或不返回：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `magnitude` | number | 视星等，数值越小越亮 |
+| `brightnessLabel` | string | 亮度等级，如“极亮恒星（负星等）”“一等亮星”“二等星” |
+| `brightnessDefinition` | string | 当前等级的视星等区间定义 |
+| `brightnessGuide` | string | 面向普通用户的实际观感解释 |
+| `nakedEyeVisibility` | string | 在一般观测条件下的肉眼可见性说明 |
+| `visualColorLabel` | string | 常见肉眼颜色，如“蓝白色”“橙红色” |
+| `visualColorHex` | string | 用于详情页色点展示的近似颜色 |
+| `visualColorDescription` | string | 颜色来源和肉眼观感说明 |
+
 #### `card`
 
 | 字段 | 类型 | 说明 |
@@ -470,6 +485,70 @@
 
 - 参数类型不合法 -> `4001`
 - 内部摘要生成失败 -> `5001`
+
+---
+
+## 4.1 获取近期天象
+
+### 契约级别
+
+**MVP 正式契约**
+
+### 接口
+
+`GET /api/tools/upcoming-events`
+
+### 作用
+
+返回未来一年内可计划的流星雨事件，供工具页和天象日历共同使用。
+
+### 请求参数
+
+无。
+
+### 成功返回字段
+
+`data.events` 为数组，字段如下：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `slug` | string | 事件唯一标识 |
+| `nameZh` / `nameEn` | string | 中文名 / 英文名 |
+| `peakDate` | string | 峰值日期，`YYYY-MM-DD` |
+| `activeStart` / `activeEnd` | string | 活跃期，`MM-DD` |
+| `zhr` | number | 理论峰值小时天顶流星数 |
+| `recommendedTime` | string | 推荐观测时段 |
+| `locationHint` | string | 理想观测地类型 |
+| `summary` | string | 事件摘要 |
+
+### 成功示例
+
+```json
+{
+  "code": 0,
+  "data": {
+    "events": [
+      {
+        "slug": "perseids",
+        "nameZh": "英仙座流星雨",
+        "nameEn": "Perseids",
+        "peakDate": "2026-08-13",
+        "activeStart": "07-17",
+        "activeEnd": "08-24",
+        "zhr": 100,
+        "recommendedTime": "午夜后至凌晨",
+        "locationHint": "远离城市灯光的开阔地",
+        "summary": "英仙座流星雨活跃期内均有机会观测"
+      }
+    ]
+  },
+  "message": "ok"
+}
+```
+
+### 数据降级
+
+数据库查询失败时使用本地流星雨目录，接口仍保持 `code: 0`，避免工具页因内容数据库短暂故障而中断。
 
 ---
 

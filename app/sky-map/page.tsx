@@ -12,11 +12,14 @@ import StarCanvas from "@/features/sky-map/star-canvas";
 import SatellitePassGuide, { type SatelliteGuidePass } from "@/features/sky-map/satellite-pass-guide";
 import NightCaptureConfirmation from "@/features/sky-map/night-capture-confirmation";
 import ObservationAssistant from "@/features/sky-map/observation-assistant";
+import AchievementTaskStrip, { getActiveAchievementTask } from "@/features/sky-map/achievement-task-strip";
+import type { AchievementCenterData } from "@/lib/achievements/types";
 import { Horizon, Observer, MakeTime, Body, Equator } from "astronomy-engine";
 import { findBrightStar } from "@/lib/astronomy/bright-stars";
-import { getConstellation, getConstellationForStar } from "@/lib/astronomy/constellations";
+import { getLocalAstronomyCatalog } from "@/lib/astronomy/catalog";
+import type { AstronomyCatalog } from "@/lib/astronomy/catalog-types";
+import type { PhotoArGuide } from "@/lib/astronomy/photo-ar-guide";
 import { stellarEquatorOfDate } from "@/lib/astronomy/stellar-coordinates";
-import { cosmicCatalog } from "@/lib/astronomy/cosmic-map";
 import {
   applyObservationCalibration,
   isObservationCalibrationValid,
@@ -267,9 +270,27 @@ export default function SkyMapPageWrapper() {
 function SkyMapPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const [astronomyCatalog, setAstronomyCatalog] = useState<AstronomyCatalog>(() => getLocalAstronomyCatalog());
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/astronomy/catalog")
+      .then((response) => response.json())
+      .then((payload: { code?: number; data?: AstronomyCatalog }) => {
+        if (!cancelled && payload.code === 0 && payload.data?.brightStars && payload.data.constellations) {
+          setAstronomyCatalog(payload.data);
+        }
+      })
+      .catch(() => {
+        // 本地目录作为短暂离线降级，避免数据库暂时不可用时星图空白。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const targetParam = searchParams.get("target");
   const rawSource = searchParams.get("source");
   const rawTimeContext = searchParams.get("timeContext");
+  const eventTimeParam = searchParams.get("eventTime");
   const rawMode = searchParams.get("mode");
   const satellitePass = parseSatellitePass(searchParams);
   const satelliteGuideKey = satellitePass?.start.time ?? null;
@@ -303,8 +324,8 @@ function SkyMapPage() {
     "primary";
 
   // source-aware 引导文案
-  const targetConstellation = getConstellation(targetParam ?? "");
-  const targetCosmicObject = cosmicCatalog.find((object) => object.slug === targetParam);
+  const targetConstellation = astronomyCatalog.constellations.find((item) => item.slug === targetParam);
+  const targetCosmicObject = astronomyCatalog.cosmicObjects.find((object) => object.slug === targetParam);
   const baseGuide = targetConstellation
     ? { target: targetConstellation.nameZh, reason: `进入${targetConstellation.nameZh}视图后，系统会展示成员恒星和认星连线。` }
     : targetCosmicObject
@@ -330,6 +351,25 @@ function SkyMapPage() {
       : baseGuide;
 
   const [selected, setSelected] = useState<ObjectContent | null>(null);
+  const [achievementData, setAchievementData] = useState<AchievementCenterData | null>(null);
+  const captureParam = searchParams.get("capture");
+  const captureRouteLaunchRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/achievements", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || payload.code !== 0) throw new Error(payload.message || "achievements unavailable");
+        return payload.data as AchievementCenterData;
+      })
+      .then(setAchievementData)
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setAchievementData(null);
+      });
+    return () => controller.abort();
+  }, []);
 
   const displayTimeKey: TimeContextKey = rawTimeContext &&
     (["now", "plus1h", "late"] as string[]).includes(rawTimeContext)
@@ -341,10 +381,10 @@ function SkyMapPage() {
     const timer = window.setInterval(() => setClockNow(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const baseTime = useMemo(
-    () => resolveTimeContext(rawTimeContext),
-    [rawTimeContext, clockNow],
-  );
+  const eventTime = eventTimeParam ? new Date(eventTimeParam) : null;
+  const baseTime = eventTime && !Number.isNaN(eventTime.getTime())
+    ? eventTime
+    : resolveTimeContext(rawTimeContext);
   const obsTime = new Date(baseTime.getTime() + timeOffsetMinutes * 60000);
   const timeText = obsTime.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   const dateText = obsTime.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).replace(/\//g, "-");
@@ -364,6 +404,7 @@ function SkyMapPage() {
   const [arAimTarget, setArAimTarget] = useState<ObjectContent | null>(null);
   const [arNearbyTargets, setArNearbyTargets] = useState<ObjectContent[]>([]);
   const [arLockedTarget, setArLockedTarget] = useState<ObjectContent | null>(null);
+  const [photoArGuide, setPhotoArGuide] = useState<PhotoArGuide | null>(null);
   const [calibration, setCalibration] = useState<ObservationCalibration | null>(null);
   const [arLaunchRequest, setArLaunchRequest] = useState(0);
   const [captureLaunchRequest, setCaptureLaunchRequest] = useState(0);
@@ -379,6 +420,24 @@ function SkyMapPage() {
   const requestedMode: "2d" | "observe" | "ar" =
     rawMode === "2d" ? "2d" : rawMode === "ar" ? "ar" : "observe";
   const skyMapMode: "2d" | "observe" | "ar" = arActive ? "ar" : requestedMode;
+  const captureLaunchKey = captureParam === "1" && skyMapMode !== "2d"
+    ? `${skyMapMode}:${targetParam ?? ""}`
+    : null;
+
+  useEffect(() => {
+    if (!captureLaunchKey) {
+      captureRouteLaunchRef.current = null;
+      return;
+    }
+    if (captureRouteLaunchRef.current === captureLaunchKey) return;
+    captureRouteLaunchRef.current = captureLaunchKey;
+    setCaptureLaunchRequest((request) => request + 1);
+  }, [captureLaunchKey]);
+
+  const activeAchievementTask = useMemo(
+    () => getActiveAchievementTask(achievementData, selected?.slug ?? null),
+    [achievementData, selected?.slug],
+  );
 
   /** 请求设备方向权限 */
   const activateOrientation = useCallback(async (): Promise<boolean> => {
@@ -426,6 +485,7 @@ function SkyMapPage() {
     setArAimTarget(null);
     setArNearbyTargets([]);
     setArLockedTarget(null);
+    setPhotoArGuide(null);
   }, []);
 
   useEffect(() => {
@@ -447,6 +507,7 @@ function SkyMapPage() {
     params.set("mode", mode);
     if (mode === "2d") {
       deactivateOrientation();
+      setPhotoArGuide(null);
     } else {
       setArActive(false);
       void activateOrientation();
@@ -459,6 +520,20 @@ function SkyMapPage() {
     setArAimTarget(null);
     setArNearbyTargets([]);
     setArLockedTarget(null);
+    if (!active) setPhotoArGuide(null);
+  }, []);
+
+  const handlePhotoGuideReady = useCallback((guide: PhotoArGuide) => {
+    setPhotoArGuide(guide);
+  }, []);
+
+  const clearPhotoGuide = useCallback(() => {
+    setPhotoArGuide(null);
+  }, []);
+
+  const handleArLockTarget = useCallback((target: ObjectContent | null) => {
+    setArLockedTarget(target);
+    if (target) setPhotoArGuide(null);
   }, []);
 
   const exitArToObservation = useCallback(() => {
@@ -466,13 +541,24 @@ function SkyMapPage() {
     setArAimTarget(null);
     setArNearbyTargets([]);
     setArLockedTarget(null);
+    setPhotoArGuide(null);
     const params = new URLSearchParams(searchParams.toString());
     params.set("mode", "observe");
     router.replace(`/sky-map?${params.toString()}`);
   }, [router, searchParams]);
 
+  const requestCapture = useCallback(() => {
+    if (arActive) {
+      exitArToObservation();
+      window.setTimeout(() => setCaptureLaunchRequest((request) => request + 1), 160);
+      return;
+    }
+    setCaptureLaunchRequest((request) => request + 1);
+  }, [arActive, exitArToObservation]);
+
   const handleCalibrationChange = useCallback((nextCalibration: ObservationCalibration | null) => {
     setCalibration(nextCalibration);
+    setPhotoArGuide(null);
     if (typeof window === "undefined") return;
     if (nextCalibration) {
       window.localStorage.setItem(OBSERVATION_CALIBRATION_STORAGE_KEY, JSON.stringify(nextCalibration));
@@ -544,6 +630,8 @@ function SkyMapPage() {
     let absoluteEventSeen = false;
     let animationFrame = 0;
     let fallbackTimer = 0;
+    let previousRawPose: { azimuth: number; pitch: number; gamma: number } | null = null;
+    let previousRawAt = 0;
 
     if (orientationStatus !== "active") {
       return;
@@ -557,6 +645,7 @@ function SkyMapPage() {
     function handleAbsoluteOrientation(e: DeviceOrientationEvent) {
       const pose = computeDeviceSkyPose(e);
       if (!pose) return;
+      if (!acceptPose(pose)) return;
       absoluteEventSeen = true;
       rawPose = pose;
     }
@@ -566,8 +655,36 @@ function SkyMapPage() {
       if (absoluteEventSeen) return;
       const pose = computeDeviceSkyPose(e);
       if (!pose) return;
+      if (!acceptPose(pose)) return;
       rawPose = pose;
     }
+
+    function acceptPose(pose: { azimuth: number; pitch: number; gamma: number }) {
+      const now = performance.now();
+      if (previousRawPose && now - previousRawAt < 140) {
+        const azJump = angleDelta(pose.azimuth, previousRawPose.azimuth);
+        const pitchJump = Math.abs(pose.pitch - previousRawPose.pitch);
+        if (azJump > 32 || pitchJump > 24) return false;
+      }
+      previousRawPose = pose;
+      previousRawAt = now;
+      return true;
+    }
+
+    function resetPoseFilter() {
+      rawPose = null;
+      filteredPose = null;
+      previousRawPose = null;
+      previousRawAt = 0;
+      lastAz = null;
+      lastPitch = null;
+      lastGamma = null;
+      lastFrameAt = 0;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") resetPoseFilter();
+    };
 
     const publishFilteredPose = (timestamp: number) => {
       if (rawPose) {
@@ -603,6 +720,7 @@ function SkyMapPage() {
     };
 
     window.addEventListener("deviceorientationabsolute", handleAbsoluteOrientation);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     // 某些设备不发送绝对方向事件，稍等片刻后再启用普通事件回退。
     fallbackTimer = window.setTimeout(() => {
       if (!absoluteEventSeen) {
@@ -613,6 +731,7 @@ function SkyMapPage() {
     return () => {
       window.clearTimeout(fallbackTimer);
       cancelAnimationFrame(animationFrame);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("deviceorientation", handleRelativeOrientation);
       window.removeEventListener("deviceorientationabsolute", handleAbsoluteOrientation);
     };
@@ -675,11 +794,12 @@ function SkyMapPage() {
           </button>
         </div>
         {/* 搜索入口 */}
-        <SearchBar timeContext={displayTimeKey} mode={skyMapMode} />
+        <SearchBar timeContext={displayTimeKey} mode={skyMapMode} catalog={astronomyCatalog} />
       </div>
 
       {/* 主星图区：自控可见层在上，WWT 引擎隐身在下 */}
       <div className="flex-1 relative">
+        <AchievementTaskStrip data={achievementData} selectedSlug={selected?.slug ?? null} />
         {locationResolved && (
           <>
             {skyMapMode !== "2d" && (
@@ -688,6 +808,7 @@ function SkyMapPage() {
                 time={obsTime}
                 location={obsLocation}
                 target={targetParam}
+                catalog={astronomyCatalog}
               />
             )}
             <StarCanvas
@@ -701,6 +822,7 @@ function SkyMapPage() {
               is2DMode={skyMapMode === "2d"}
               orientation={correctedOrientation ?? undefined}
               arMode={arActive}
+              catalog={astronomyCatalog}
               orionBestWindow={
                 targetParam && (targetParam === "orion" || targetParam === "betelgeuse")
                   ? isNearBestTime(
@@ -736,14 +858,17 @@ function SkyMapPage() {
             onActivateOrientation={activateOrientation}
             onDeactivateOrientation={deactivateOrientation}
             onActiveChange={handleArActiveChange}
-            onLockTarget={setArLockedTarget}
+            onLockTarget={handleArLockTarget}
+            onRequestCapture={requestCapture}
+            photoGuide={photoArGuide}
+            onClearPhotoGuide={clearPhotoGuide}
             onSwitchToObservation={switchArTargetToObservation}
             launchRequest={arLaunchRequest}
             launcherVisible={false}
             focusedConstellationName={
-              getConstellation(targetParam ?? "")?.nameZh
-                ?? getConstellation(selected?.slug ?? "")?.nameZh
-                ?? getConstellationForStar(selected?.slug ?? "")?.nameZh
+              astronomyCatalog.constellations.find((item) => item.slug === targetParam)?.nameZh
+                ?? astronomyCatalog.constellations.find((item) => item.slug === selected?.slug)?.nameZh
+                ?? astronomyCatalog.constellations.find((item) => item.memberSlugs.includes(selected?.slug ?? ""))?.nameZh
                 ?? null
             }
           />
@@ -757,6 +882,9 @@ function SkyMapPage() {
             calibration={calibration}
             launchRequest={captureLaunchRequest}
             launcherVisible={false}
+            onPhotoGuideReady={handlePhotoGuideReady}
+            onPhotoGuideClear={clearPhotoGuide}
+            onRequestAr={() => setArLaunchRequest((request) => request + 1)}
           />
         )}
         {skyMapMode !== "2d" && (
@@ -772,7 +900,7 @@ function SkyMapPage() {
             onCalibrationChange={handleCalibrationChange}
             onRequestAr={() => setArLaunchRequest((request) => request + 1)}
             onExitAr={exitArToObservation}
-            onRequestCapture={() => setCaptureLaunchRequest((request) => request + 1)}
+            onRequestCapture={requestCapture}
           />
         )}
 
@@ -842,6 +970,7 @@ function SkyMapPage() {
         selected={selected}
         source={source}
         mode={skyMapMode}
+        achievementTask={activeAchievementTask}
         viewPose={
           correctedOrientation
             ? correctedOrientation

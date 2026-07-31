@@ -15,6 +15,8 @@ export interface HorizontalSkyCandidate {
 export interface NightSkyMatch extends HorizontalSkyCandidate {
   distance: number;
   score: number;
+  pointX: number;
+  pointY: number;
   azimuthDelta: number;
   altitudeDelta: number;
   azimuthError: number;
@@ -26,6 +28,8 @@ export interface NightSkyMatchOptions {
   calibrated?: boolean;
   estimatedAccuracy?: number;
 }
+
+import { candidateVisibilityScore, isCandidatePossible } from "./candidate-visibility";
 
 export interface CameraFieldOfView {
   horizontal: number;
@@ -117,6 +121,7 @@ export function matchBrightPointsToSky(
   const matches: NightSkyMatch[] = [];
 
   for (const candidate of candidates) {
+    if (!isCandidatePossible(candidate.altitude)) continue;
     const azimuthDelta = signedAngleDelta(candidate.azimuth, view.azimuth);
     const altitudeDelta = candidate.altitude - view.pitch;
     if (Math.abs(azimuthDelta) > maximumAzimuthDelta) continue;
@@ -129,6 +134,7 @@ export function matchBrightPointsToSky(
     let nearestNormalizedDistance = Number.POSITIVE_INFINITY;
     let nearestAzimuthError = Number.POSITIVE_INFINITY;
     let nearestAltitudeError = Number.POSITIVE_INFINITY;
+    let nearestPoint = points[0];
     for (const point of points) {
       const deltaX = point.x - projected.x;
       const deltaY = point.y - projected.y;
@@ -143,12 +149,14 @@ export function matchBrightPointsToSky(
         nearestNormalizedDistance = Math.hypot(deltaX, deltaY);
         nearestAzimuthError = azimuthError;
         nearestAltitudeError = altitudeError;
+        nearestPoint = point;
       }
     }
     if (nearestAzimuthError > azimuthErrorTolerance) continue;
     if (nearestAltitudeError > altitudeErrorTolerance) continue;
 
     const magnitudeScore = Math.max(0, Math.min(1, (4 - candidate.magnitude) / 4));
+    const visibilityScore = candidateVisibilityScore(candidate.altitude);
     let score: number;
     if (calibrated) {
       const azimuthSigma = azimuthErrorTolerance / 2;
@@ -159,9 +167,13 @@ export function matchBrightPointsToSky(
       score = pointScore * 0.35
         + altitudeScore * 0.3
         + azimuthScore * 0.2
-        + magnitudeScore * 0.05;
+        + magnitudeScore * 0.05
+        + visibilityScore * 0.1;
       if (points.length === 1) {
-        score *= SINGLE_POINT_SCORE_MAXIMUM / CALIBRATED_BASE_SCORE_MAXIMUM;
+        score = Math.min(
+          SINGLE_POINT_SCORE_MAXIMUM,
+          score * SINGLE_POINT_SCORE_MAXIMUM / CALIBRATED_BASE_SCORE_MAXIMUM,
+        );
       }
     } else {
       const nearestAngularError = Math.hypot(nearestAzimuthError, nearestAltitudeError);
@@ -170,13 +182,15 @@ export function matchBrightPointsToSky(
         azimuthDelta / maximumAzimuthDelta,
         altitudeDelta / maximumAltitudeDelta,
       ) / Math.SQRT2);
-      score = pointScore * 0.65 + directionScore * 0.25 + magnitudeScore * 0.1;
+      score = pointScore * 0.6 + directionScore * 0.25 + magnitudeScore * 0.1 + visibilityScore * 0.05;
     }
 
     matches.push({
       ...candidate,
       distance: nearestNormalizedDistance * imageScale,
       score,
+      pointX: nearestPoint.x,
+      pointY: nearestPoint.y,
       azimuthDelta,
       altitudeDelta,
       azimuthError: nearestAzimuthError,

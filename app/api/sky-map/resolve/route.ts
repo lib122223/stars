@@ -32,31 +32,39 @@ export async function GET(request: Request) {
     ? null
     : findConstellationByName(name);
 
-  if (localConstellation) {
-    return apiSuccess({
-      matched: true,
-      object: {
-        slug: localConstellation.slug,
-        nameZh: localConstellation.nameZh,
-        nameEn: localConstellation.nameEn,
-        objectType: "constellation",
-      },
-      detailUrl: `/objects/${localConstellation.slug}`,
-    });
-  }
-
   try {
-    // 第一阶段匹配策略：name 匹配 name_zh 或 name_en
+    // 数据库优先：支持 slug、中文名、英文名和数据库别名。
     const rows = await query<CelestialRow>(
       `SELECT slug, name_zh, name_en, object_type
-       FROM celestial_objects
-       WHERE is_active = true
-         AND (LOWER(name_zh) = LOWER($1) OR LOWER(name_en) = LOWER($1))
+       FROM celestial_objects AS objects
+       WHERE objects.is_active = true
+         AND ($1 = objects.slug
+           OR LOWER(objects.name_zh) = LOWER($1)
+           OR LOWER(objects.name_en) = LOWER($1)
+           OR EXISTS (
+             SELECT 1
+             FROM unnest(objects.search_aliases) AS alias
+             WHERE LOWER(alias) = LOWER($1)
+           ))
+         AND ($2 = '' OR objects.object_type = $2)
        LIMIT 1`,
-      [name],
+      [name.trim(), nameType ?? ""],
     );
 
     if (rows.length === 0) {
+      if (localConstellation) {
+        return apiSuccess({
+          matched: true,
+          object: {
+            slug: localConstellation.slug,
+            nameZh: localConstellation.nameZh,
+            nameEn: localConstellation.nameEn,
+            objectType: "constellation",
+          },
+          detailUrl: `/objects/${localConstellation.slug}`,
+        });
+      }
+
       if (localBrightStar) {
         return apiSuccess({
           matched: true,

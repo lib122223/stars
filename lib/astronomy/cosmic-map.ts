@@ -15,6 +15,7 @@ export interface CosmicCatalogObject {
   visualSize: number;
   color: string;
   aliases: string[];
+  isDetailReady?: boolean;
 }
 
 export interface PanoramaProjectionInput {

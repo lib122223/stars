@@ -21,6 +21,7 @@ interface SatelliteForecast {
 }
 
 interface SatellitePassPanelProps {
+  embedded?: boolean;
   location: { lat: number; lng: number } | null;
   locationStatus: "pending" | "granted" | "denied";
   onRequestLocation: () => void;
@@ -92,6 +93,7 @@ function skyMapLink(pass: SatellitePass, mode: "observe" | "ar"): string {
 }
 
 export default function SatellitePassPanel({
+  embedded = false,
   location,
   locationStatus,
   onRequestLocation,
@@ -99,6 +101,7 @@ export default function SatellitePassPanel({
   const [state, setState] = useState<LoadState>({ status: "idle" });
   const [refreshKey, setRefreshKey] = useState(0);
   const [now, setNow] = useState(() => Date.now());
+  const [showAllPasses, setShowAllPasses] = useState(false);
   const latitude = location?.lat;
   const longitude = location?.lng;
   const requestKey = latitude != null && longitude != null
@@ -137,11 +140,12 @@ export default function SatellitePassPanel({
   const futurePasses = currentState.status === "ready"
     ? currentState.data.passes.filter((pass) => new Date(pass.end.time).getTime() > now)
     : [];
+  const visiblePasses = showAllPasses ? futurePasses : futurePasses.slice(0, 1);
 
   const retry = useCallback(() => setRefreshKey((key) => key + 1), []);
 
   return (
-    <section id="satellite-passes" className="mt-5 rounded-xl border border-white/[0.06] bg-surface/60 p-5 sm:p-7">
+    <section id="satellite-passes" className={`scroll-mt-20 ${embedded ? "mt-6 border-t border-white/[0.08] pt-5" : "mt-5 rounded-xl border border-white/[0.06] bg-surface/60 p-5 sm:p-7"}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs text-accent/40">人造卫星提醒</p>
@@ -202,7 +206,7 @@ export default function SatellitePassPanel({
 
       {locationStatus === "granted" && currentState.status === "ready" && futurePasses.length > 0 && (
         <div className="mt-5 divide-y divide-white/[0.06] border-y border-white/[0.06]">
-          {futurePasses.map((pass) => (
+          {visiblePasses.map((pass) => (
             <article key={pass.id} className="py-4 first:pt-3 last:pb-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -255,6 +259,16 @@ export default function SatellitePassPanel({
             </article>
           ))}
         </div>
+      )}
+
+      {futurePasses.length > 1 && (
+        <button
+          type="button"
+          onClick={() => setShowAllPasses((value) => !value)}
+          className="mt-3 text-xs text-white/35 transition-colors hover:text-white/65"
+        >
+          {showAllPasses ? "收起其余过境" : `查看其余 ${futurePasses.length - 1} 次过境`}
+        </button>
       )}
 
       <p className="mt-3 text-[10px] leading-relaxed text-white/15">

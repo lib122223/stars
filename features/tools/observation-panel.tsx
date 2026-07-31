@@ -5,7 +5,20 @@ interface ObservationPanelProps {
   cloud?: { cover: number } | null;
   clarity?: { level: string } | null;
   nearby?: { recommended: boolean; summary: string };
-  events?: { slug: string; nameZh: string; peakDate: string; zhr: number }[];
+  events?: {
+    slug: string;
+    nameZh: string;
+    peakDate: string;
+    zhr: number;
+    visibility: {
+      band: "excellent" | "good" | "marginal" | "not_visible";
+      score: number;
+      activeNow: boolean;
+      direction: string;
+      radiantAltitude: number | null;
+      summary: string;
+    };
+  }[];
 }
 
 function fmtMoonTime(iso: string | null): string {
@@ -102,12 +115,10 @@ export default function ObservationPanel({
         </div>
           <div className="space-y-1.5 text-xs text-white/40">
             {events.map((e) => (
-              <div key={e.slug} className="flex justify-between">
-                <span>{e.nameZh}</span>
-                <span>
-                  {new Date(e.peakDate).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })}
-                  {" · "}
-                  {e.zhr >= 100 ? "强" : e.zhr >= 50 ? "中等" : "较弱"}
+              <div key={e.slug} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate">{e.nameZh}</span>
+                <span className={e.visibility.band === "not_visible" ? "shrink-0 text-white/25" : "shrink-0 text-accent/75"}>
+                  {e.visibility.band === "not_visible" ? "本地不易" : `本地 ${e.visibility.score}`}
                 </span>
               </div>
             ))}

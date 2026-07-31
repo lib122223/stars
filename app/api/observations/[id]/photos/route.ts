@@ -125,6 +125,7 @@ export async function POST(
     if (error instanceof Error && error.message.includes("not configured")) {
       return apiError(ErrorCode.INTERNAL_ERROR, "photo storage is not configured on the server");
     }
+    console.error("observation photo upload failed", error instanceof Error ? error.message : error);
     return apiError(ErrorCode.INTERNAL_ERROR, "failed to upload observation photo");
   }
 }

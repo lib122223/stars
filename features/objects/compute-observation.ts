@@ -12,6 +12,7 @@ interface ObservationData {
   longitude: number;
   riseTime: string | null;
   setTime: string | null;
+  bestMonths: string | null;
   advice: string;
 }
 
@@ -59,6 +60,52 @@ function fmtTime(d: Date): string {
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
+function formatMonthRange(months: number[]): string {
+  const normalized = [...new Set(months.map((month) => ((month % 12) + 12) % 12))].sort((a, b) => a - b);
+  if (normalized.length === 0) return "暂无明显月份";
+  if (normalized.length === 12) return "全年可见";
+
+  const selected = new Set(normalized);
+  const starts = normalized.filter((month) => !selected.has((month + 11) % 12));
+  const ranges: Array<[number, number]> = [];
+
+  for (const start of starts) {
+    let end = start;
+    while (selected.has((end + 1) % 12) && (end + 1) % 12 !== start) {
+      end = (end + 1) % 12;
+    }
+    ranges.push([start, end]);
+  }
+
+  return ranges.map(([start, end]) => {
+    if (start === end) return `${start + 1}月`;
+    return end < start
+      ? `${start + 1}月-次年${end + 1}月`
+      : `${start + 1}月-${end + 1}月`;
+  }).join("、");
+}
+
+function bestMonthsForStar(
+  coordinates: { raHours: number; decDeg: number },
+  observer: Observer,
+  referenceDate: Date,
+): string {
+  const year = referenceDate.getFullYear();
+  const samples = Array.from({ length: 12 }, (_, month) => {
+    const sampleDate = new Date(year, month, 15, 21, 0, 0, 0);
+    const horizontal = horizonForStar(observer, sampleDate, coordinates);
+    return { month, altitude: horizontal.altitude };
+  });
+  const peakAltitude = Math.max(...samples.map((sample) => sample.altitude));
+  if (peakAltitude < 15) return "本地晚间较难看见";
+
+  const minimumAltitude = Math.max(20, peakAltitude - 15);
+  const recommendedMonths = samples
+    .filter((sample) => sample.altitude >= minimumAltitude)
+    .map((sample) => sample.month);
+  return formatMonthRange(recommendedMonths);
+}
+
 /** 为行星分别查询 rise (direction=1) 和 set (direction=-1) */
 function planetRiseSet(
   body: Body,
@@ -89,11 +136,11 @@ function starRiseSet(
   const scanHours = 24;
   const steps = (scanHours * 60) / stepMin;
 
-  let prevAlt: number | null = null;
+  let prevAlt = horizonForStar(observer, now, { raHours, decDeg }).altitude;
   let rise: Date | null = null;
   let set: Date | null = null;
 
-  for (let i = 0; i <= steps; i++) {
+  for (let i = 1; i <= steps; i++) {
     const t = new Date(now.getTime() + i * stepMin * 60_000);
     const hor = horizonForStar(observer, t, { raHours, decDeg });
     const alt = hor.altitude;
@@ -103,8 +150,8 @@ function starRiseSet(
       if (prevAlt <= 0 && alt > 0 && !rise) {
         rise = t;
       }
-      // 从正到负 → 落下（且已经有升起之后）
-      if (prevAlt > 0 && alt <= 0 && !set && rise) {
+      // Record the next setting crossing even when the star is already above the horizon.
+      if (prevAlt > 0 && alt <= 0 && !set) {
         set = t;
       }
     }
@@ -155,6 +202,7 @@ export function computeObservation(slug: string, lat: number, lng: number, obsDa
   let az: number;
   let raHours: number | null = null;
   let decDeg: number | null = null;
+  let bestMonths: string | null = null;
 
   // 1. alt/az
   if (planetSlugs.has(slug)) {
@@ -170,6 +218,7 @@ export function computeObservation(slug: string, lat: number, lng: number, obsDa
     az = hor.azimuth;
     raHours = c.raHours;
     decDeg = c.decDeg;
+    bestMonths = bestMonthsForStar(c, observer, now);
   }
 
   // 2. 状态判定 — 6 小时窗口
@@ -225,6 +274,7 @@ export function computeObservation(slug: string, lat: number, lng: number, obsDa
     longitude: lng,
     riseTime,
     setTime,
+    bestMonths,
     advice,
   };
 }

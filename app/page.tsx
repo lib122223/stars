@@ -4,8 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import LoadingCard from "@/features/home/loading-card";
 import ErrorCard from "@/features/home/error-card";
-import TonightOverview from "@/features/home/tonight-overview";
-import SatelliteVisibilityAlert from "@/features/tools/satellite-visibility-alert";
+import GalleryLivePanel from "@/features/gallery/gallery-live-panel";
 
 // ---- 数据契约（沿用现有 /api/recommendations 返回结构，只取本轮需要的字段） ----
 
@@ -132,11 +131,10 @@ export default function HomePage() {
         )}
       </Link>
 
-      <TonightOverview location={location} />
-      <SatelliteVisibilityAlert location={location} className="mt-4" />
+      <GalleryLivePanel location={location} />
 
       {/* 2 / 3. 第二层 */}
-      <div className="flex gap-3 mt-4">
+      <div className="hidden">
         <Link
           href="/sky-map"
           className="flex-1 rounded-xl bg-surface/40 px-5 py-3 text-center text-sm text-white/45 transition-colors hover:bg-surface/60 hover:text-white/70"

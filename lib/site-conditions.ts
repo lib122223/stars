@@ -1,4 +1,6 @@
 const WEATHER_URL = "https://api.open-meteo.com/v1/forecast";
+import { Body, Equator, Horizon, MakeTime, Observer } from "astronomy-engine";
+
 const AIR_URL = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
 export interface SiteMetricPoint {
@@ -24,6 +26,8 @@ export interface ConditionScore {
   windowStart: string | null;
   windowEnd: string | null;
   direction: string;
+  azimuth: number | null;
+  altitude: number | null;
   summary: string;
   reasons: string[];
 }
@@ -83,6 +87,8 @@ function scoreLabel(score: number): string {
 
 function fmtTime(raw: string | null): string | null {
   if (!raw) return null;
+  const clockMatch = raw.match(/(?:T|\s)(\d{1,2}):(\d{2})/);
+  if (clockMatch) return `${clockMatch[1].padStart(2, "0")}:${clockMatch[2]}`;
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -96,6 +102,19 @@ function fmtDateTime(raw: Date | null): string | null {
 
 function addMinutes(raw: string, minutes: number): Date {
   return new Date(new Date(raw).getTime() + minutes * 60_000);
+}
+
+function sunHorizontalAt(raw: string, lat: number, lng: number): { azimuth: number; altitude: number } | null {
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  const time = MakeTime(date);
+  const observer = new Observer(lat, lng, 0);
+  const equator = Equator(Body.Sun, time, observer, true, true);
+  const horizon = Horizon(time, observer, equator.ra, equator.dec);
+  return {
+    azimuth: Number(horizon.azimuth.toFixed(1)),
+    altitude: Number(horizon.altitude.toFixed(1)),
+  };
 }
 
 function dateKey(d: Date): string {
@@ -176,6 +195,8 @@ function makeCondition(
   points: SiteMetricPoint[],
   windowStart: Date | null,
   windowEnd: Date | null,
+  eventTime: string | null,
+  location: { lat: number; lng: number },
 ): ConditionScore {
   if (points.length === 0) {
     return {
@@ -186,6 +207,8 @@ function makeCondition(
       bestReferenceTime: null,
       windowStart: fmtDateTime(windowStart),
       windowEnd: fmtDateTime(windowEnd),
+      azimuth: null,
+      altitude: null,
       direction: kind === "sunrise" ? "东侧低空" : kind === "sunset" ? "西侧低空" : "全天空",
       summary: "该时间段暂无足够小时预报数据。",
       reasons: [],
@@ -199,6 +222,9 @@ function makeCondition(
   const time = fmtTime(best.time);
   const startText = fmtDateTime(windowStart);
   const endText = fmtDateTime(windowEnd);
+  const sunPosition = kind === "star"
+    ? null
+    : sunHorizontalAt(eventTime ?? best.time, location.lat, location.lng);
 
   if (kind === "star") {
     return {
@@ -209,6 +235,8 @@ function makeCondition(
       bestReferenceTime: time,
       windowStart: startText,
       windowEnd: endText,
+      azimuth: null,
+      altitude: null,
       direction: "抬头看全天，尽量避开城市光源方向",
       summary: score >= 68
         ? "云量和透明度可以支撑看星，适合找亮星、星座骨架和银河方向。"
@@ -219,14 +247,21 @@ function makeCondition(
     };
   }
 
+  const exactEventTime = eventTime ? fmtTime(eventTime) : time;
+  const exactEventDate = eventTime ? new Date(eventTime) : null;
+
   return {
     score,
     label,
-    bestTime: time,
-    bestTimeIso: new Date(best.time).toISOString(),
-    bestReferenceTime: time,
+    bestTime: exactEventTime,
+    bestTimeIso: exactEventDate && !Number.isNaN(exactEventDate.getTime())
+      ? exactEventDate.toISOString()
+      : new Date(best.time).toISOString(),
+    bestReferenceTime: exactEventTime,
     windowStart: startText,
     windowEnd: endText,
+    azimuth: sunPosition?.azimuth ?? null,
+    altitude: sunPosition?.altitude ?? null,
     direction: kind === "sunset" ? "西侧低空" : "东侧低空",
     summary: score >= 68
       ? "云层结构比较适合出霞，建议提前到达并观察低空云边变化。"
@@ -321,9 +356,9 @@ export async function fetchSiteConditions(lat: number, lng: number): Promise<Sit
     return {
       date: dates[idx] ?? dateKey(new Date()),
       label: idx === 0 ? "今天/今晚" : "明天",
-      star: makeCondition("star", nearestPoints(points, nightStart, nightEnd), nightStart, nightEnd),
-      sunsetGlow: makeCondition("sunset", nearestPoints(points, sunsetStart, sunsetEnd), sunsetStart, sunsetEnd),
-      sunriseGlow: makeCondition("sunrise", nearestPoints(points, sunriseStart, sunriseEnd), sunriseStart, sunriseEnd),
+      star: makeCondition("star", nearestPoints(points, nightStart, nightEnd), nightStart, nightEnd, null, { lat, lng }),
+      sunsetGlow: makeCondition("sunset", nearestPoints(points, sunsetStart, sunsetEnd), sunsetStart, sunsetEnd, sunset ?? null, { lat, lng }),
+      sunriseGlow: makeCondition("sunrise", nearestPoints(points, sunriseStart, sunriseEnd), sunriseStart, sunriseEnd, nextSunrise ?? null, { lat, lng }),
     };
   });
 

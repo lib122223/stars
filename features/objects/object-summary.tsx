@@ -1,6 +1,10 @@
+import type { StellarProfile } from "@/lib/astronomy/stellar-profile";
+import StellarProfilePanel from "@/features/objects/stellar-profile-panel";
+
 const typeLabel: Record<string, string> = {
   constellation: "星座",
-  bright_star: "亮星",
+  bright_star: "恒星",
+  star: "恒星",
   planet: "行星",
 };
 
@@ -8,12 +12,14 @@ interface ObjectSummaryProps {
   nameZh: string;
   nameEn: string;
   objectType: string;
+  stellarProfile?: StellarProfile | null;
 }
 
 export default function ObjectSummary({
   nameZh,
   nameEn,
   objectType,
+  stellarProfile,
 }: ObjectSummaryProps) {
   return (
     <div className="text-center">
@@ -24,6 +30,9 @@ export default function ObjectSummary({
         {nameZh}
       </h1>
       <p className="mt-1 text-sm text-white/30">{nameEn}</p>
+      {stellarProfile ? (
+        <StellarProfilePanel profile={stellarProfile} />
+      ) : null}
     </div>
   );
 }

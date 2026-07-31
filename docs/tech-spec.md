@@ -167,9 +167,9 @@ docs/
 2. 区域观测条件层
 3. 观测参考内容层
 
-### 4.2 当前表设计方向
+### 4.2 当前已落地的对象数据表
 
-当前至少包含两类核心对象：
+第一阶段迁移已将星体基础信息、亮星详情、星座成员与连线关系写入 PostgreSQL。实时方位、仰角和行星轨道仍由天文计算代码按时间和地点实时计算，不保存为静态快照。
 
 #### `celestial_objects`
 
@@ -182,8 +182,13 @@ docs/
 - `name_zh`
 - `name_en`
 - `object_type`
-- `ra_hours`
-- `dec_deg`
+- `ra_hours`：恒星 J2000 赤经；行星等动态对象可为空
+- `dec_deg`：恒星 J2000 赤纬；行星等动态对象可为空
+- `magnitude`
+- `visual_size`：深空对象在平面总览中的显示尺寸
+- `display_color`：深空对象显示色
+- `search_aliases`
+- `is_detail_ready`
 - `is_active`
 - `created_at`
 - `updated_at`
@@ -202,64 +207,104 @@ docs/
 - `created_at`
 - `updated_at`
 
-### 4.3 下一阶段新增表建议
+#### `object_relations`
+
+用于保存详情页“下一步可以探索”的有向对象关系，不再把推荐关系写在 API 代码中。
+
+- `id`
+- `source_object_id`
+- `target_object_id`
+- `relation_type`：当前为 `next_explore`
+- `sort_order`
+- `created_at` / `updated_at`
+
+当前已覆盖 168 个对象详情卡片和 49 条下一步探索关系。
+
+#### `constellations`
+
+用于保存星座说明、缩写和视图锚点。它通过 `object_id` 关联 `celestial_objects` 中同 slug 的星座对象。
+
+- `id`
+- `object_id`
+- `abbreviation`
+- `description`
+- `anchor_slug`
+- `created_at`
+- `updated_at`
+
+#### `constellation_members`
+
+用于保存星座与恒星的多对多关系及显示顺序。
+
+- `constellation_id`
+- `object_id`
+- `sort_order`
+- `created_at`
+
+#### `constellation_lines`
+
+用于保存星座连线的两个端点和绘制顺序。
+
+- `constellation_id`
+- `from_object_id`
+- `to_object_id`
+- `sort_order`
+- `created_at`
+
+### 4.3 数据迁移命令
+
+- `npm run db:migrate`：创建或扩展表结构和索引，不删除业务数据
+- `npm run db:seed`：执行已有基础种子并同步 129 颗亮星、18 个深空对象、11 个星座、168 个详情卡片、49 条对象关系、成员关系、连线和媒体；可重复执行
+
+第二阶段新增 `GET /api/astronomy/catalog`，星图页面加载后使用该目录作为搜索、2D 星图、观察模式和 AR 星点的统一稳定数据源。数据库不可用时才使用本地目录降级。
+
+### 4.4 天象事件数据表
 
 #### `astronomy_events`
 
-用于未来天象日历和近期可关注天象。
+用于未来天象日历和工具页的近期可关注天象，当前已迁移流星雨数据。
 
-建议字段：
+已落地字段：
 
-- `id`
-- `slug`
+- `id` / `slug`
 - `event_type`：`meteor_shower` 等
-- `name_zh`
-- `name_en`
-- `start_at`
-- `end_at`
-- `peak_at`
-- `intensity_level`
-- `summary`
-- `is_active`
-- `created_at`
-- `updated_at`
+- `name_zh` / `name_en`
+- `active_start_date` / `active_end_date` / `peak_date`
+- `zhr` / `intensity_level`
+- `summary` / `is_active` / `created_at` / `updated_at`
 
 #### `event_observation_notes`
 
-用于中国境内观测说明。
+用于中国境内观测说明和区域建议。
 
-建议字段：
+已落地字段：
 
 - `id`
 - `event_id`
-- `recommended_time_window`
-- `observation_tip`
-- `ideal_location_type`
-- `better_region_summary`
-- `created_at`
-- `updated_at`
+- `recommended_time_window` / `observation_tip`
+- `ideal_location_type` / `better_region_summary`
+- `created_at` / `updated_at`
 
-#### `observation_media`
+当前 seed 已迁移 8 场流星雨和 8 条观测说明。跨年事件按完整日期保存，避免只保存 `MM-DD` 导致查询和排序错误。
 
-用于观测参考图。
+#### `media_assets`
 
-建议字段：
+用于画廊、对象详情和后续天象事件的媒体目录。媒体文件不存入 PostgreSQL，数据库只保存存储位置、外部降级地址和版权元数据。
 
-- `id`
-- `target_type`：`object` / `event`
-- `target_slug`
-- `media_type`：`naked_eye_reference` / `photography_reference`
-- `image_url`
-- `caption`
-- `photographer_name`
-- `shot_location`
-- `shot_time`
-- `equipment_note`
-- `license_note`
-- `source_url`
-- `is_active`
-- `created_at`
-- `updated_at`
+已落地字段：
+
+- `id` / `asset_key`
+- `media_type`：`gallery` / `object_reference` / `event_reference`
+- `gallery_category`
+- `object_id`：可空，绑定 `celestial_objects`
+- `event_slug`：为后续事件参考图预留
+- `title` / `description` / `alt_text`
+- `storage_bucket` / `storage_path`
+- `external_url`
+- `source_url` / `credit` / `location` / `captured_at` / `equipment` / `license`
+- `sort_order` / `is_active` / `created_at` / `updated_at`
+
+当前 seed 已迁移 12 条画廊媒体和 12 条对象详情媒体。用户观测照片使用独立的 `observation_photos` 表保存元数据，文件放在 Supabase Storage 的私有 `observation-photos` bucket；服务端使用 `SUPABASE_SERVICE_ROLE_KEY` 生成临时签名地址，浏览器不接触服务密钥。画廊和详情参考图当前仍可使用 `external_url`，后续再按需上传到 Storage 并填写 `storage_bucket`、`storage_path`。
 
 #### `region_observation_snapshots`
 
@@ -345,12 +390,43 @@ docs/
 - 返回解释内容
 - 后续可接入观测参考图与动态观测状态
 
+#### `GET /api/gallery`
+
+职责：
+
+- 返回数据库中的画廊媒体目录
+- 支持可选 `category` 过滤
+- 返回图片地址和来源、授权、拍摄信息
+
+#### `GET /api/media/[assetKey]`
+
+职责：
+
+- 通过数据库媒体键代理读取图片文件
+- 优先读取配置的 Storage 公共对象地址，没有 Storage 文件时读取 `external_url`
+- 使用同源地址供浏览器加载，减少 Wikimedia 外链、来源策略和本地访问差异
+
+#### `GET /api/objects/[slug]/media`
+
+职责：
+
+- 返回对象详情绑定的参考图
+- 默认按媒体排序返回本体影像和完整来源元数据
+
 #### `GET /api/tools/observation-summary`
 
 职责：
 
 - 返回工具页轻摘要
 - 后续可逐步升级为更完整的条件工具承接
+
+#### `GET /api/tools/upcoming-events`
+
+职责：
+
+- 返回未来一年内的流星雨事件
+- 返回峰值日期、活跃期、ZHR、推荐观测时段和理想观测地
+- 数据库不可用时回退到本地流星雨目录
 
 #### `GET /api/health`
 

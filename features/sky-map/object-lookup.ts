@@ -10,6 +10,7 @@
 
 /** 亮星条目 */
 interface BrightStar {
+  slug?: string;
   nameZh: string;
   nameEn: string;
   raHours: number;   // RA in hours
@@ -82,11 +83,12 @@ function findBrightStar(
   raHours: number,
   decDeg: number,
   thresholdDeg = 1.5,
+  catalog = brightStars,
 ): BrightStar | null {
   let best: BrightStar | null = null;
   let bestDist = thresholdDeg;
 
-  for (const star of brightStars) {
+  for (const star of catalog) {
     const dist = angularDistance(raHours, decDeg, star.raHours, star.decDeg);
     if (dist < bestDist) {
       bestDist = dist;
@@ -136,13 +138,28 @@ function findPlanet(
 export function lookupByCoord(
   raHours: number,
   decDeg: number,
+  catalog?: Array<{
+    nameZh: string;
+    nameEn: string;
+    raHours: number;
+    decDeg: number;
+    magnitude: number;
+    slug?: string;
+  }>,
 ): LookupResult | null {
   const planet = findPlanet(raHours, decDeg);
   if (planet) {
     return { nameZh: planet.nameZh, nameEn: planet.nameEn, type: "planet" };
   }
 
-  const star = findBrightStar(raHours, decDeg);
+  const star = findBrightStar(raHours, decDeg, 1.5, catalog?.map((item) => ({
+    slug: item.slug,
+    nameZh: item.nameZh,
+    nameEn: item.nameEn,
+    raHours: item.raHours,
+    decDeg: item.decDeg,
+    mag: item.magnitude,
+  })));
   if (star) {
     return { nameZh: star.nameZh, nameEn: star.nameEn, type: "bright_star" };
   }

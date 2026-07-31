@@ -1,6 +1,7 @@
 import { activeBrightStars } from "@/lib/astronomy/bright-stars";
 import { activeConstellations } from "@/lib/astronomy/constellations";
 import { cosmicCatalog } from "@/lib/astronomy/cosmic-map";
+import type { AstronomyCatalog } from "@/lib/astronomy/catalog-types";
 
 /**
  * 搜索对象池 V3 — 数据库核心对象 + 本地活动亮星。
@@ -53,7 +54,7 @@ const cosmicSearchPool: SearchEntry[] = cosmicCatalog.map((object) => ({
   searchAliases: object.aliases,
 }));
 
-const searchPool: SearchEntry[] = [
+const localSearchPool: SearchEntry[] = [
   ...coreSearchPool,
   ...constellationSearchPool.filter((s) => !coreSearchPool.some((o) => o.slug === s.slug)),
   ...brightStarSearchPool.filter((s) => !coreSearchPool.some((o) => o.slug === s.slug)),
@@ -61,10 +62,41 @@ const searchPool: SearchEntry[] = [
 ];
 
 /** 基础匹配：中文名 / slug / 英文名 / searchAliases */
-export function searchObjects(query: string, max = 5): SearchEntry[] {
+function buildSearchPool(catalog?: AstronomyCatalog): SearchEntry[] {
+  if (!catalog) return localSearchPool;
+  const brightStarSearchPool: SearchEntry[] = catalog.brightStars.map((star) => ({
+    slug: star.slug,
+    nameZh: star.nameZh,
+    nameEn: star.nameEn,
+    objectType: "bright_star",
+    searchAliases: star.searchAliases,
+  }));
+  const constellationSearchPool: SearchEntry[] = catalog.constellations.map((constellation) => ({
+    slug: constellation.slug,
+    nameZh: constellation.nameZh,
+    nameEn: constellation.nameEn,
+    objectType: "constellation",
+    searchAliases: [constellation.abbreviation],
+  }));
+  const cosmicSearchPool: SearchEntry[] = catalog.cosmicObjects.map((object) => ({
+    slug: object.slug,
+    nameZh: object.nameZh,
+    nameEn: object.nameEn,
+    objectType: object.type,
+    searchAliases: object.aliases,
+  }));
+  return [
+    ...coreSearchPool,
+    ...constellationSearchPool.filter((item) => !coreSearchPool.some((core) => core.slug === item.slug)),
+    ...brightStarSearchPool.filter((item) => !coreSearchPool.some((core) => core.slug === item.slug)),
+    ...cosmicSearchPool,
+  ];
+}
+
+export function searchObjects(query: string, max = 5, catalog?: AstronomyCatalog): SearchEntry[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  return searchPool
+  return buildSearchPool(catalog)
     .filter((o) =>
       o.nameZh.includes(q) ||
       o.slug.toLowerCase().includes(q) ||

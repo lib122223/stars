@@ -10,17 +10,20 @@
  * 当前不接收鼠标事件（被 StarCanvas 覆盖）。
  */
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { Horizon, MakeTime, Observer, Body, Equator } from "astronomy-engine";
-import { activeBrightStars } from "@/lib/astronomy/bright-stars";
-import { activeConstellations, getConstellation, getConstellationMembers } from "@/lib/astronomy/constellations";
+import { getLocalAstronomyCatalog } from "@/lib/astronomy/catalog";
+import type { AstronomyCatalog } from "@/lib/astronomy/catalog-types";
 import {
-  cosmicCatalog,
   normalizeDegrees,
   projectEquatorialToPanorama,
   type CosmicCatalogObject,
 } from "@/lib/astronomy/cosmic-map";
 import { stellarEquatorOfDate } from "@/lib/astronomy/stellar-coordinates";
+import {
+  areCandidatesTooClose,
+  isCandidatePossible,
+} from "@/lib/astronomy/candidate-visibility";
 
 interface CelestialClick {
   name: string;
@@ -45,34 +48,8 @@ interface StarCanvasProps {
   orionBestWindow?: boolean;
   /** AR 模式：保留星点/标签层，让摄像头画面作为背景 */
   arMode?: boolean;
+  catalog?: AstronomyCatalog;
 }
-
-const brightStarSlugToName = Object.fromEntries(
-  activeBrightStars().map((s) => [s.slug, s.nameZh]),
-);
-
-const constellationCatalog = activeConstellations();
-const CONSTELLATION_MEMBER_SLUGS = new Set(
-  constellationCatalog.flatMap((constellation) => constellation.memberSlugs),
-);
-
-/** URL slug → StarCanvas 星点名称的映射 */
-const slugToStarName: Record<string, string> = {
-  ...brightStarSlugToName,
-  jupiter: "木星",
-  venus: "金星",
-  mars: "火星",
-  saturn: "土星",
-  moon: "月球",
-  sun: "太阳",
-  vega: "织女星",
-  orion: "猎户座",
-  // 通用回退 targetRef → 映射到最显眼的具体对象
-  "brightest-visible-target": "木星",
-  "bright-star-entry": "天狼星",
-};
-
-slugToStarName.bootes = "\u5927\u89D2\u661F";
 
 interface StarDot {
   name: string;
@@ -91,6 +68,9 @@ interface HitObject {
   y: number;
   r: number;
   isPreviewOnly?: boolean;
+  azimuth?: number;
+  altitude?: number;
+  priority?: number;
 }
 
 function closestHitObject(hits: HitObject[], x: number, y: number): HitObject | null {
@@ -99,38 +79,16 @@ function closestHitObject(hits: HitObject[], x: number, y: number): HitObject | 
 
   for (const hit of hits) {
     const distance = Math.hypot(hit.x - x, hit.y - y);
-    if (distance <= hit.r && distance < closestDistance) {
+    const priorityBias = (hit.priority ?? 0) * 0.01;
+    if (distance <= hit.r && distance - priorityBias < closestDistance) {
       closest = hit;
-      closestDistance = distance;
+      closestDistance = distance - priorityBias;
     }
   }
 
   return closest;
 }
 
-const brightStarObjectMeta = Object.fromEntries(
-  activeBrightStars().map((s) => [s.nameZh, { type: "bright_star", slug: s.slug }]),
-);
-
-/** 可点击对象的 type/slug 映射 */
-const objectMeta: Record<string, { type: string; slug: string }> = {
-  "水星": { type: "planet", slug: "mercury" },
-  "木星": { type: "planet", slug: "jupiter" },
-  "金星": { type: "planet", slug: "venus" },
-  "火星": { type: "planet", slug: "mars" },
-  "土星": { type: "planet", slug: "saturn" },
-  "天王星": { type: "planet", slug: "uranus" },
-  "海王星": { type: "planet", slug: "neptune" },
-  "月球": { type: "planet", slug: "moon" },
-  "太阳": { type: "star", slug: "sun" },
-  ...brightStarObjectMeta,
-  "猎户座": { type: "constellation", slug: "orion" },
-};
-
-for (const constellation of constellationCatalog) {
-  objectMeta[constellation.nameZh] = { type: "constellation", slug: constellation.slug };
-}
-const clickableStars = new Set(Object.keys(objectMeta));
 const NAMED_STAR_EDGE_ALPHA = 0.045;
 const NAMED_STAR_LABEL_ALPHA = 0.055;
 const OBS_VIEW_HALF_AZ_DEG = 86;
@@ -253,14 +211,71 @@ export default function StarCanvas({
   orientation,
   orionBestWindow,
   arMode = false,
+  catalog: catalogProp,
 }: StarCanvasProps) {
+  const catalog = useMemo<AstronomyCatalog>(
+    () => catalogProp ?? getLocalAstronomyCatalog(),
+    [catalogProp],
+  );
+  const constellationCatalog = catalog.constellations;
+  const cosmicCatalog = catalog.cosmicObjects;
+  const activeBrightStars = () => catalog.brightStars;
+  const getConstellation = (slug: string) => constellationCatalog.find((item) => item.slug === slug);
+  const getConstellationMembers = (constellation: AstronomyCatalog["constellations"][number]) => {
+    const starsBySlug = new Map(catalog.brightStars.map((star) => [star.slug, star]));
+    return constellation.memberSlugs
+      .map((slug) => starsBySlug.get(slug))
+      .filter((star): star is AstronomyCatalog["brightStars"][number] => Boolean(star));
+  };
+  const brightStarSlugToName = Object.fromEntries(
+    catalog.brightStars.map((star) => [star.slug, star.nameZh]),
+  );
+  const CONSTELLATION_MEMBER_SLUGS = new Set(
+    constellationCatalog.flatMap((constellation) => constellation.memberSlugs),
+  );
+  const catalogBrightStarSlugs = new Set(catalog.brightStars.map((star) => star.slug));
+  const slugToStarName: Record<string, string> = {
+    ...brightStarSlugToName,
+    jupiter: "木星",
+    venus: "金星",
+    mars: "火星",
+    saturn: "土星",
+    moon: "月球",
+    sun: "太阳",
+    vega: "织女星",
+    orion: "猎户座",
+    "brightest-visible-target": "木星",
+    "bright-star-entry": "天狼星",
+    bootes: "大角星",
+  };
+  const brightStarObjectMeta = Object.fromEntries(
+    catalog.brightStars.map((star) => [star.nameZh, { type: "bright_star", slug: star.slug }]),
+  );
+  const objectMeta: Record<string, { type: string; slug: string }> = {
+    "水星": { type: "planet", slug: "mercury" },
+    "木星": { type: "planet", slug: "jupiter" },
+    "金星": { type: "planet", slug: "venus" },
+    "火星": { type: "planet", slug: "mars" },
+    "土星": { type: "planet", slug: "saturn" },
+    "天王星": { type: "planet", slug: "uranus" },
+    "海王星": { type: "planet", slug: "neptune" },
+    "月球": { type: "planet", slug: "moon" },
+    "太阳": { type: "star", slug: "sun" },
+    ...brightStarObjectMeta,
+  };
+  for (const constellation of constellationCatalog) {
+    objectMeta[constellation.nameZh] = { type: "constellation", slug: constellation.slug };
+  }
+  const clickableStars = new Set(Object.keys(objectMeta));
   const ref = useRef<HTMLCanvasElement>(null);
   const dimsRef = useRef({
     W: 0, H: 0,
     animStart: 0, animSlug: "",
     nameToPos: new Map<string, { x: number; y: number }>(),
     nameToAlpha: new Map<string, number>(),
-    hitObjects: [] as HitObject[],
+          hitObjects: [] as HitObject[],
+    nameToAzimuth: new Map<string, number>(),
+    nameToAltitude: new Map<string, number>(),
     hY: 0,
   });
   const prev2DModeRef = useRef(true);
@@ -274,12 +289,21 @@ export default function StarCanvas({
     lastX: 0,
     lastY: 0,
   });
+  const twoDViewportRef = useRef<{ centerRaDeg: number; centerDecDeg: number } | null>(null);
+  const previous2DTargetRef = useRef(target);
+  const previous2DSelectedRef = useRef<string | null>(selected?.slug ?? null);
   const [manualViewOffset, setManualViewOffset] = useState({ az: 0, alt: 0 });
+  const [clickCandidates, setClickCandidates] = useState<HitObject[]>([]);
+  const [clickCandidatePosition, setClickCandidatePosition] = useState({ x: 0, y: 0 });
   const [, forceRender] = useState(0);
 
   useEffect(() => {
     if (is2DMode) setManualViewOffset({ az: 0, alt: 0 });
-  }, [is2DMode, selected?.slug, target]);
+  }, [is2DMode, target]);
+
+  useEffect(() => {
+    setClickCandidates([]);
+  }, [arMode, is2DMode, selected?.slug, target]);
 
   // selected 变化时触发短暂扩散动画
   const prevSlugRef = useRef<string | null>(null);
@@ -322,6 +346,9 @@ export default function StarCanvas({
     dimsRef.current.H = H;
 
     // 进入观察模式的着陆过渡
+    if (is2DMode && !prev2DModeRef.current) {
+      twoDViewportRef.current = null;
+    }
     if (prev2DModeRef.current && !is2DMode) {
       obsEnterTimeRef.current = performance.now();
       const start = obsEnterTimeRef.current;
@@ -344,7 +371,8 @@ export default function StarCanvas({
     const activeFocusedConstellation = constellationCatalog.find((constellation) =>
       constellation.slug === target
         || (selected?.type === "constellation" && constellation.slug === selected.slug)
-        || (is2DMode && constellation.memberSlugs.includes(selected?.slug ?? ""))
+        || constellation.memberSlugs.includes(target ?? "")
+        || constellation.memberSlugs.includes(selected?.slug ?? "")
     );
     const constellationFocus = Boolean(activeFocusedConstellation);
     const focusedMemberSlugs = new Set(activeFocusedConstellation?.memberSlugs ?? []);
@@ -382,7 +410,21 @@ export default function StarCanvas({
           : targetStar
             ? targetStar.raHours * 15
             : targetBodyRaDeg ?? 180;
-      const centerRaDeg = normalizeDegrees(baseCenterRaDeg + manualViewOffset.az);
+      const selectedSlug = selected?.slug ?? null;
+      const selectionChanged = previous2DSelectedRef.current !== selectedSlug;
+      const targetChanged = previous2DTargetRef.current !== target;
+      const preserveViewport = Boolean(
+        twoDViewportRef.current
+          && selectionChanged
+          && !targetChanged
+          && selected?.type !== "constellation",
+      );
+      const centerRaDeg = preserveViewport
+        ? twoDViewportRef.current!.centerRaDeg
+        : normalizeDegrees(baseCenterRaDeg + manualViewOffset.az);
+      twoDViewportRef.current = { centerRaDeg, centerDecDeg };
+      previous2DSelectedRef.current = selectedSlug;
+      previous2DTargetRef.current = target;
       const mapTop = 44;
       const mapBottom = 28;
       const mapHeight = Math.max(1, H - mapTop - mapBottom);
@@ -488,7 +530,7 @@ export default function StarCanvas({
             x: pos.x,
             y: pos.y,
             r: 13,
-            isPreviewOnly: true,
+            isPreviewOnly: !object.isDetailReady,
           });
           ctx.save();
           ctx.font = "9px sans-serif";
@@ -652,7 +694,7 @@ export default function StarCanvas({
         .filter((slug): slug is string => Boolean(slug)),
     );
     const extendedStars = activeBrightStars()
-      .filter((s) => !staticSlugs.has(s.slug))
+      .filter((s) => !staticSlugs.has(s.slug) || (constellationFocus && focusedMemberSlugs.has(s.slug)))
       // 总览保持克制；进入星座视图后，当前星座的成员不再受总览星等阈值限制。
       .filter((s) => constellationFocus && !is2DMode
         ? focusedMemberSlugs.has(s.slug)
@@ -661,6 +703,8 @@ export default function StarCanvas({
 
     const nameToPos = new Map<string, { x: number; y: number }>();
     const nameToAlpha = new Map<string, number>();
+    const nameToAzimuth = new Map<string, number>();
+    const nameToAltitude = new Map<string, number>();
     let skyGlow = 0;
     let nightDepth = 1;
     let sunAltitude = -90;
@@ -726,6 +770,8 @@ export default function StarCanvas({
           x: orientation ? cx + (signedDAz / obsAzHalfDeg) * rx : cx + Math.sin(azRad) * baseDist * rx,
           y: orientation ? cy + ((viewAlt - alt) / vFovDeg) * ry : cy - Math.cos(azRad) * baseDist * ry,
         });
+        nameToAzimuth.set(name, az);
+        nameToAltitude.set(name, alt);
         const dAlt = Math.abs(alt - viewAlt);
         const verticalGate = orientation
           ? dAlt <= vFovDeg
@@ -783,6 +829,8 @@ export default function StarCanvas({
         x: orientation ? cx + (signedDAzE / obsAzHalfDeg) * rx : cx + Math.sin(azRad) * baseDist * rx,
         y: orientation ? cy + ((viewAlt - alt) / vFovDeg) * ry : cy - Math.cos(azRad) * baseDist * ry,
       });
+      nameToAzimuth.set(s.name, az);
+      nameToAltitude.set(s.name, alt);
       const dAltE = Math.abs(alt - viewAlt);
       const verticalGateE = orientation
         ? dAltE <= vFovDeg
@@ -977,6 +1025,7 @@ export default function StarCanvas({
       // 星点天地裁切 — 不进入地面区域
       if (!isInSkyArea(cy)) continue;
       const meta = objectMeta[s.name];
+      if (constellationFocus && meta?.type === "bright_star" && catalogBrightStarSlugs.has(meta.slug)) continue;
       if (constellationFocus && !is2DMode && (!meta || meta.type !== "bright_star" || !focusedMemberSlugs.has(meta.slug))) continue;
       if (!constellationFocus && meta?.type === "bright_star" && CONSTELLATION_MEMBER_SLUGS.has(meta.slug)) continue;
       const isNamedBrightStar = meta?.type === "bright_star";
@@ -997,6 +1046,8 @@ export default function StarCanvas({
           x: cx,
           y: cy,
           r: Math.max(s.r * 12, 44),
+          azimuth: nameToAzimuth.get(s.name),
+          altitude: nameToAltitude.get(s.name),
         });
       }
 
@@ -1137,6 +1188,9 @@ export default function StarCanvas({
         x: cx,
         y: cy,
         r: Math.max(r * 16, 50),
+        azimuth: nameToAzimuth.get(s.name),
+        altitude: nameToAltitude.get(s.name),
+        priority: 3,
       });
 
       // 星点本体
@@ -1154,18 +1208,22 @@ export default function StarCanvas({
 
       // 轻标签 — 规则驱动：2D 仅最亮星，observation 放宽且有可见度门槛
       const isFocusedMember = constellationFocus && focusedMemberSlugs.has(s.slug);
-      const showLabel = isFocusedMember || !is2DMode
-        ? exLa >= NAMED_STAR_LABEL_ALPHA
-        : s.mag < 1.0;
+      const isConstellationMember = CONSTELLATION_MEMBER_SLUGS.has(s.slug);
+      const isSelected = s.slug === selected?.slug;
+      const showLabel = is2DMode
+        ? (isFocusedMember || s.mag < 1.0 || isSelected) && exLa >= NAMED_STAR_LABEL_ALPHA
+        : arMode
+          ? (!isConstellationMember || isSelected) && exLa >= NAMED_STAR_LABEL_ALPHA
+          : (!isConstellationMember || isSelected) && exLa >= NAMED_STAR_LABEL_ALPHA;
       if (showLabel) {
         ctx.save();
-        ctx.font = isFocusedMember ? "10px sans-serif" : !is2DMode ? "9.5px sans-serif" : "9px sans-serif";
+        ctx.font = isSelected ? "600 11px sans-serif" : isFocusedMember ? "10px sans-serif" : "9px sans-serif";
         ctx.textAlign = "center";
-        const la = isFocusedMember
-          ? Math.min(0.58, 0.26 + 0.32 * exLa)
-          : is2DMode
-            ? 0.12
-            : Math.min(0.62, (arMode ? 0.24 : 0.16) + (arMode ? 0.34 : 0.26) * exLa);
+        const la = isSelected
+          ? Math.min(0.9, 0.58 + 0.26 * exLa)
+          : isFocusedMember
+            ? Math.min(0.58, 0.26 + 0.32 * exLa)
+            : is2DMode ? 0.12 : Math.min(0.42, 0.14 + 0.22 * exLa);
         ctx.fillStyle = `rgba(255,255,255,${la.toFixed(2)})`;
         ctx.fillText(s.name, cx, cy + r + 9);
         ctx.restore();
@@ -1213,8 +1271,8 @@ export default function StarCanvas({
       const anchorName = anchor?.nameZh;
       const anchorPos = anchorName ? nameToPos.get(anchorName) : null;
       const anchorAlpha = anchorName ? nameToAlpha.get(anchorName) ?? 0 : 0;
-      if (anchorPos && anchorName && isInSkyArea(anchorPos.y) && anchorAlpha > 0.04) {
-        const labelY = anchorPos.y - 30;
+      if (anchorPos && anchorName && isInSkyArea(anchorPos.y) && anchorAlpha > 0.04 && (!arMode || selected)) {
+        const labelY = Math.max(34, anchorPos.y - 30);
         hitObjects.push({
           name: focusedConstellationData.nameZh,
           type: "constellation",
@@ -1227,12 +1285,27 @@ export default function StarCanvas({
         ctx.font = "11px sans-serif";
         ctx.textAlign = "center";
         ctx.fillStyle = `rgba(180,230,238,${Math.min(0.72, 0.28 + anchorAlpha * 0.5).toFixed(2)})`;
-        const constellationLabel = focusedConstellation
-          ? `${focusedConstellationData.nameZh} · ${members.length}\u9897\u6210\u5458\u661f`
-          : focusedConstellationData.nameZh;
+        const constellationLabel = focusedConstellationData.nameZh;
         ctx.fillText(constellationLabel, anchorPos.x, labelY);
         ctx.restore();
       }
+
+      if (arMode && selected && focusedMemberSlugs.has(selected.slug)) {
+        ctx.save();
+        ctx.lineWidth = 0.9;
+        for (const member of members) {
+          const memberPos = nameToPos.get(member.nameZh);
+          if (!memberPos || !isInSkyArea(memberPos.y)) continue;
+          const isSelectedMember = member.slug === selected.slug;
+          ctx.globalAlpha = isSelectedMember ? 0.85 : 0.42;
+          ctx.strokeStyle = isSelectedMember ? "rgba(220,248,255,0.95)" : "rgba(165,230,220,0.72)";
+          ctx.beginPath();
+          ctx.arc(memberPos.x, memberPos.y, isSelectedMember ? 7 : 4.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
     }
 
     if (!focusedConstellation) {
@@ -1316,7 +1389,7 @@ export default function StarCanvas({
       ctx.restore();
 
       // 目标标签 — 观察模式显示目标名，2D 模式显示"先看这里"
-      if (!hasSelected) {
+      if (!hasSelected && !arMode) {
         ctx.save();
         ctx.font = "10px sans-serif";
         ctx.textAlign = "center";
@@ -1381,7 +1454,10 @@ export default function StarCanvas({
         ctx.font = `${compactViewport ? 10 : 12}px sans-serif`;
         ctx.textAlign = "center";
         ctx.fillStyle = `rgba(220,238,255,${Math.min(0.78, 0.36 + sAlpha * 0.42).toFixed(2)})`;
-        ctx.fillText(selectedConstellation?.nameZh || selectedStar.label || selectedStar.name, sx, sy - sr * 0.92);
+        const selectedLabel = selected?.type === "constellation"
+          ? selectedConstellation?.nameZh ?? selectedStar.name
+          : selectedStar.label ?? selectedStar.name;
+        ctx.fillText(selectedLabel, sx, sy - sr * 0.92);
         ctx.restore();
       }
       } // end hClipY guard
@@ -1482,6 +1558,10 @@ export default function StarCanvas({
       const isMain = clickableStars.has(s.name);
       const meta = objectMeta[s.name];
       const isNamedBrightStar = meta?.type === "bright_star";
+      const isConstellationMember = isNamedBrightStar && meta
+        ? CONSTELLATION_MEMBER_SLUGS.has(meta.slug)
+        : false;
+      if (!is2DMode && isConstellationMember && meta?.slug !== selected?.slug) continue;
       const la = retainNamedStarAlpha(s.name, nameToAlpha.get(s.name) ?? 1, cx);
       if (!is2DMode && (!isInSkyArea(cy) || la < (isNamedBrightStar ? NAMED_STAR_LABEL_ALPHA : 0.08))) continue;
       const isDayBody = !is2DMode && (s.name === "太阳" || s.name === "月球");
@@ -1760,16 +1840,30 @@ export default function StarCanvas({
       const releaseRadius = captureRadius + 12;
       const focusedMembers = activeFocusedConstellation?.memberSlugs ?? null;
       const brightStarHits = hitObjects.filter((hit) =>
-        hit.type === "bright_star" && (!focusedMembers || focusedMembers.includes(hit.slug)),
+        hit.type === "bright_star"
+          && hit.azimuth != null
+          && hit.altitude != null
+          && isCandidatePossible(hit.altitude)
+          && (!focusedMembers || focusedMembers.includes(hit.slug)),
       );
       const distanceToCenter = (hit: HitObject) => Math.hypot(hit.x - centerX, hit.y - centerY);
       const candidateRadius = Math.max(72, Math.min(112, Math.min(W, H) * 0.16));
-      const nearbyHits = brightStarHits
+      const visibleNearbyHits = brightStarHits
         .map((hit) => ({ hit, distance: distanceToCenter(hit) }))
         .filter(({ distance }) => distance <= candidateRadius)
         .sort((a, b) => a.distance - b.distance)
-        .slice(0, 4)
         .map(({ hit }) => hit);
+      const nearbyHits = visibleNearbyHits.filter((hit) =>
+        visibleNearbyHits.some((other) => other.slug !== hit.slug
+          && hit.azimuth != null
+          && hit.altitude != null
+          && other.azimuth != null
+          && other.altitude != null
+          && areCandidatesTooClose(
+            { azimuth: hit.azimuth, altitude: hit.altitude },
+            { azimuth: other.azimuth, altitude: other.altitude },
+          )),
+      );
       const nearbyTargets = nearbyHits.map((hit) => ({
         name: hit.name,
         type: hit.type,
@@ -1800,7 +1894,7 @@ export default function StarCanvas({
       lastAimNearbyKeyRef.current = "";
       onAimTargetChange?.(null, []);
     }
-  }, [target, source, selected, obsTime, obsLocation, is2DMode, orientation, orionBestWindow, manualViewOffset, arMode, onAimTargetChange]);
+  }, [target, source, selected, obsTime, obsLocation, is2DMode, orientation, orionBestWindow, manualViewOffset, arMode, onAimTargetChange, catalog]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1814,6 +1908,34 @@ export default function StarCanvas({
       const nx = px / rect.width;
       const ny = py / rect.height;
       const n2p = dimsRef.current.nameToPos;
+
+      setClickCandidates([]);
+
+      // Use a bounded visual radius so a large hit area cannot swallow a nearby star.
+      const selectionRadius = Math.max(20, Math.min(30, Math.min(rect.width, rect.height) * 0.045));
+      const selectableTypes = new Set(["bright_star", "planet", "star"]);
+      const candidateBySlug = new Map<string, HitObject>();
+      for (const candidate of dimsRef.current.hitObjects) {
+        if (!selectableTypes.has(candidate.type)) continue;
+        const distance = Math.hypot(candidate.x - px, candidate.y - py);
+        if (distance > Math.min(candidate.r, selectionRadius)) continue;
+        const previous = candidateBySlug.get(candidate.slug);
+        if (!previous || distance < Math.hypot(previous.x - px, previous.y - py)) {
+          candidateBySlug.set(candidate.slug, candidate);
+        }
+      }
+      const preciseCandidates = [...candidateBySlug.values()].sort((a, b) =>
+        Math.hypot(a.x - px, a.y - py) - Math.hypot(b.x - px, b.y - py),
+      );
+      if (preciseCandidates.length > 1) {
+        const firstDistance = Math.hypot(preciseCandidates[0].x - px, preciseCandidates[0].y - py);
+        const secondDistance = Math.hypot(preciseCandidates[1].x - px, preciseCandidates[1].y - py);
+        if (secondDistance - firstDistance < 9) {
+          setClickCandidatePosition({ x: px, y: py });
+          setClickCandidates(preciseCandidates.slice(0, 4));
+          return;
+        }
+      }
 
       const hit = closestHitObject(dimsRef.current.hitObjects, px, py);
       if (hit) {
@@ -1864,7 +1986,7 @@ export default function StarCanvas({
       }
 
     },
-    [onObjectClick, is2DMode, target],
+    [onObjectClick, is2DMode, target, catalog],
   );
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1914,16 +2036,54 @@ export default function StarCanvas({
   }, []);
 
   return (
-    <canvas
-      ref={ref}
-      className="absolute inset-0 z-10 h-full w-full cursor-crosshair pointer-events-auto"
-      style={{ background: arMode ? "transparent" : "#070b0c", touchAction: "none" }}
-      onClick={handleClick}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={finishPointerDrag}
-      onPointerCancel={finishPointerDrag}
-    />
+    <div className="pointer-events-none absolute inset-0 z-10">
+      <canvas
+        ref={ref}
+        className="absolute inset-0 h-full w-full cursor-crosshair pointer-events-auto"
+        style={{ background: arMode ? "transparent" : "#070b0c", touchAction: "none" }}
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishPointerDrag}
+        onPointerCancel={finishPointerDrag}
+      />
+      {clickCandidates.length > 1 && (
+        <div
+          className="pointer-events-auto absolute z-30 w-[min(15rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-full rounded-lg border border-cyan-100/20 bg-[#071115]/95 p-2 shadow-[0_10px_32px_rgba(0,0,0,0.35)] backdrop-blur-md"
+          style={{ left: clickCandidatePosition.x, top: Math.max(72, clickCandidatePosition.y - 12) }}
+        >
+          <div className="mb-1.5 text-[10px] text-cyan-50/55">目标距离较近</div>
+          <div className="grid gap-1">
+            {clickCandidates.map((candidate) => (
+              <button
+                key={candidate.slug}
+                type="button"
+                className="flex min-h-8 items-center justify-between rounded-md border border-white/10 bg-white/[0.05] px-2.5 text-left text-[11px] text-white/85 transition-colors hover:bg-cyan-100/10"
+                onClick={() => {
+                  setClickCandidates([]);
+                  onObjectClick({
+                    name: candidate.name,
+                    type: candidate.type,
+                    slug: candidate.slug,
+                    isPreviewOnly: candidate.isPreviewOnly,
+                  });
+                }}
+              >
+                <span>{candidate.name}</span>
+                <span className="text-[10px] text-cyan-100/45">选择</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="mt-1 w-full py-1 text-[10px] text-white/35 hover:text-white/60"
+            onClick={() => setClickCandidates([])}
+          >
+            取消
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

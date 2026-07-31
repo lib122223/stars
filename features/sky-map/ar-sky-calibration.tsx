@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { cameraFieldOfView } from "@/lib/astronomy/night-photo-matching";
+import type { PhotoArGuide } from "@/lib/astronomy/photo-ar-guide";
 
 type Pose = { azimuth: number; pitch: number; gamma: number } | null;
 type CalibrationState = "idle" | "requesting" | "active" | "denied" | "unsupported";
@@ -16,10 +18,13 @@ interface ArSkyCalibrationProps {
   onDeactivateOrientation: () => void;
   onActiveChange: (active: boolean) => void;
   onLockTarget: (target: ArTarget | null) => void;
+  onRequestCapture: () => void;
   onSwitchToObservation: () => void;
   focusedConstellationName?: string | null;
   launchRequest?: number;
   launcherVisible?: boolean;
+  photoGuide?: PhotoArGuide | null;
+  onClearPhotoGuide: () => void;
 }
 
 function isSecureCameraContext() {
@@ -42,10 +47,13 @@ export default function ArSkyCalibration({
   onDeactivateOrientation,
   onActiveChange,
   onLockTarget,
+  onRequestCapture,
   onSwitchToObservation,
   focusedConstellationName = null,
   launchRequest = 0,
   launcherVisible = true,
+  photoGuide = null,
+  onClearPhotoGuide,
 }: ArSkyCalibrationProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -59,16 +67,29 @@ export default function ArSkyCalibration({
     if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
 
-  const stop = useCallback(() => {
-    stopMedia();
-    onActiveChange(false);
-    setState("idle");
-    setMessage("");
-  }, [onActiveChange, stopMedia]);
-
   useEffect(() => {
     return () => stopMedia();
   }, [stopMedia]);
+
+  useEffect(() => {
+    const releaseCamera = () => {
+      if (!streamRef.current && !active) return;
+      stopMedia();
+      onActiveChange(false);
+      setState("idle");
+      setMessage("页面离开后已释放摄像头，请返回后重新打开 AR。");
+    };
+    const releaseWhenHidden = () => {
+      if (document.visibilityState === "hidden") releaseCamera();
+    };
+
+    document.addEventListener("visibilitychange", releaseWhenHidden);
+    window.addEventListener("pagehide", releaseCamera);
+    return () => {
+      document.removeEventListener("visibilitychange", releaseWhenHidden);
+      window.removeEventListener("pagehide", releaseCamera);
+    };
+  }, [active, onActiveChange, stopMedia]);
 
   useEffect(() => {
     if (!active || !videoRef.current || !streamRef.current) return;
@@ -101,6 +122,8 @@ export default function ArSkyCalibration({
     }
 
     try {
+      stopMedia();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
       const orientationGranted = await onActivateOrientation();
       if (!orientationGranted) {
         setState("denied");
@@ -136,6 +159,20 @@ export default function ArSkyCalibration({
     void start();
   }, [launchRequest, start]);
 
+  const photoGuidePosition = photoGuide && orientation
+    ? (() => {
+        const fov = cameraFieldOfView(photoGuide.imageWidth, photoGuide.imageHeight, photoGuide.zoom);
+        const azimuthDelta = ((photoGuide.targetAzimuth - orientation.azimuth + 540) % 360) - 180;
+        const altitudeDelta = photoGuide.targetAltitude - orientation.pitch;
+        const horizontalRatio = azimuthDelta / Math.max(1, fov.horizontal / 2);
+        const verticalRatio = altitudeDelta / Math.max(1, fov.vertical / 2);
+        const left = Math.max(8, Math.min(92, 50 + horizontalRatio * 40));
+        const top = Math.max(13, Math.min(87, 50 - verticalRatio * 34));
+        const angle = Math.atan2(top - 50, left - 50) * 180 / Math.PI + 90;
+        return { left, top, angle, outside: Math.abs(horizontalRatio) > 1 || Math.abs(verticalRatio) > 1 };
+      })()
+    : null;
+
   if (!active) {
     if (!launcherVisible) {
       return state === "denied" || state === "unsupported" ? (
@@ -167,15 +204,13 @@ export default function ArSkyCalibration({
     );
   }
 
-  const heading = orientation ? Math.round(orientation.azimuth) : null;
-  const direction = orientation ? directionFromAzimuth(orientation.azimuth) : "--";
   const reticleTarget = lockedTarget ?? aimTarget;
 
   return (
     <>
       <video
         ref={videoRef}
-        className="pointer-events-none absolute inset-0 z-[5] h-full w-full object-cover opacity-70"
+        className="pointer-events-none absolute inset-0 z-[5] h-full w-full bg-black object-contain opacity-70"
         style={{ filter: "brightness(0.82) contrast(1.12)" }}
         autoPlay
         muted
@@ -183,6 +218,24 @@ export default function ArSkyCalibration({
         aria-label="AR 星空摄像头画面"
       />
       <div className="pointer-events-none absolute inset-0 z-[25]">
+        {photoGuide && (
+          <>
+            {photoGuidePosition && (
+              <div
+                className="absolute z-30 h-3 w-3 rounded-full border border-amber-100/90 bg-amber-200 shadow-[0_0_14px_rgba(251,191,36,0.8)]"
+                style={{ left: `${photoGuidePosition.left}%`, top: `${photoGuidePosition.top}%`, transform: "translate(-50%, -50%)" }}
+                aria-label={`照片定位：${photoGuide.target.name}`}
+              />
+            )}
+            <div className="pointer-events-auto absolute right-4 top-36 z-40 max-w-[13rem] rounded-lg border border-amber-200/20 bg-black/60 px-3 py-2 text-[11px] text-amber-50/80 backdrop-blur-md">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">照片定位 · 手动关闭</span>
+                <button type="button" onClick={onClearPhotoGuide} className="shrink-0 text-amber-100/55 hover:text-amber-50">清除</button>
+              </div>
+              <p className="mt-1 text-amber-100/55">正在寻找 {photoGuide.target.name}{photoGuidePosition?.outside ? " · 转动手机" : ""}</p>
+            </div>
+          </>
+        )}
         <div className={`absolute left-1/2 top-1/2 h-8 w-8 sm:h-9 sm:w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border transition-colors duration-200 ${
           lockedTarget
             ? "border-emerald-200/90 shadow-[0_0_26px_rgba(110,231,183,0.28)]"
@@ -201,23 +254,11 @@ export default function ArSkyCalibration({
           </div>
         )}
 
-        <div className="pointer-events-auto absolute left-4 right-4 top-20 z-30">
-          <div className="max-w-[18rem] overflow-hidden rounded-lg border border-cyan-100/15 bg-black/45 px-3 py-2 text-[11px] text-cyan-50/75 backdrop-blur-md">
-            <p className="font-medium text-cyan-50/90">AR 识星</p>
-            <p className="mt-1 truncate text-cyan-50/55">
-              {orientation ? `方向 ${direction} ${heading}° · 仰角 ${Math.round(orientation.pitch)}°` : "等待方向传感器..."}
-            </p>
-            {focusedConstellationName && (
-              <p className="mt-1 truncate text-emerald-100/60">
-                {focusedConstellationName} · 仅从成员星中确认
-              </p>
-            )}
-          </div>
-        </div>
-
         {nearbyTargets.length > 1 && !lockedTarget && (
           <div className="pointer-events-auto absolute bottom-28 left-4 right-4 mx-auto max-w-xl rounded-lg border border-cyan-100/15 bg-black/55 px-3 py-2 backdrop-blur-md">
             <div className="mb-1.5 text-[10px] text-cyan-50/45">准星附近的候选目标</div>
+            <div className="mb-1.5 text-xs font-medium text-amber-50/85">两个目标太近？分辨候选</div>
+            <p className="mb-2 text-[10px] leading-relaxed text-cyan-50/50">当前候选的真实方位很接近，AR 不会替你强行猜测。可以先拍照，再用时间、地点和仰角辅助确认。</p>
             <div className="flex flex-wrap gap-1.5">
               {nearbyTargets.map((target) => (
                 <button
@@ -229,6 +270,13 @@ export default function ArSkyCalibration({
                   {target.name}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={onRequestCapture}
+                className="rounded-md border border-amber-200/25 bg-amber-200/10 px-2.5 py-1 text-[11px] text-amber-50/85 transition-colors hover:bg-amber-200/15"
+              >
+                拍照辅助确认
+              </button>
             </div>
           </div>
         )}

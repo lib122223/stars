@@ -1,4 +1,5 @@
 import { activeBrightStars, type BrightStar } from "@/lib/astronomy/bright-stars";
+import { getStellarProfile } from "@/lib/astronomy/stellar-profile";
 
 export interface BrightStarCard {
   whatIsIt: string;
@@ -104,10 +105,11 @@ export function getBrightStarContext(slug: string): StarContext {
 export function buildBrightStarCard(star: BrightStar): BrightStarCard {
   const context = getBrightStarContext(star.slug);
   const groupText = context.group ? groupDescription[context.group] : "";
+  const profile = getStellarProfile(star);
 
   return {
-    whatIsIt: `${star.nameZh}（${star.nameEn}）是${context.constellationZh}（${context.constellationEn}）的一颗有名亮星。当前对象表采用 J2000 坐标：赤经 ${formatRa(star.raHours)}，赤纬 ${formatDec(star.decDeg)}，视星等约 ${star.magnitude.toFixed(2)}。`,
-    whyWatchIt: `${magnitudeDescription(star.magnitude)}观察模式会根据你的时间、地点和手机朝向实时计算它的高度与方位，所以它在屏幕里的位置来自天球坐标换算，不是固定贴图。${groupText ? ` ${groupText}` : ""}`,
+    whatIsIt: `${star.nameZh}（${star.nameEn}）是${context.constellationZh}（${context.constellationEn}）的一颗恒星。它的亮度等级是${profile.brightnessLabel}（${profile.brightnessDefinition}），视星等约 ${star.magnitude.toFixed(2)}；在肉眼下通常呈${profile.visualColorLabel}。当前对象表采用 J2000 坐标：赤经 ${formatRa(star.raHours)}，赤纬 ${formatDec(star.decDeg)}。`,
+    whyWatchIt: `${profile.nakedEyeVisibility}${magnitudeDescription(star.magnitude)}观察模式会根据你的时间、地点和手机朝向实时计算它的高度与方位，所以它在屏幕里的位置来自天球坐标换算，不是固定贴图。${profile.visualColorDescription}。${groupText ? ` ${groupText}` : ""}`,
     whatNext: buildNextText(star),
   };
 }

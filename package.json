@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsx --test",
-    "db:migrate": "node --env-file=.env.local scripts/migrate.mjs"
+    "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
+    "db:seed": "node --env-file=.env.local node_modules/tsx/dist/cli.mjs scripts/seed-astronomy.ts",
+    "media:migrate": "node --env-file=.env.local scripts/migrate-media.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

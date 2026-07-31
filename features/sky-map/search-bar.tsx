@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { searchObjects } from "./search-data";
 import { withTimeContext, type TimeContextKey } from "@/lib/time-context";
+import type { AstronomyCatalog } from "@/lib/astronomy/catalog-types";
 
 const typeLabel: Record<string, string> = {
   star: "恒星",
@@ -19,6 +20,7 @@ const typeLabel: Record<string, string> = {
 interface SearchBarProps {
   timeContext: TimeContextKey;
   mode?: "2d" | "observe" | "ar";
+  catalog?: AstronomyCatalog;
 }
 
 function SearchIcon() {
@@ -39,12 +41,12 @@ function SearchIcon() {
   );
 }
 
-export default function SearchBar({ timeContext, mode = "2d" }: SearchBarProps) {
+export default function SearchBar({ timeContext, mode = "2d", catalog }: SearchBarProps) {
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
   const router = useRouter();
 
-  const results = searchObjects(query);
+  const results = searchObjects(query, 5, catalog);
   const showResults = focused && query.trim().length >= 1;
 
   function handleSelect(slug: string) {
